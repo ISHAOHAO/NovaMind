@@ -23,8 +23,8 @@ export JWT_SECRET
 
 # 首次启动执行数据库迁移和种子数据
 if [ ! -f "$SEED_MARKER" ]; then
-  echo "[entrypoint] Running database migration..."
-  prisma migrate deploy
+  echo "[entrypoint] Syncing database schema..."
+  prisma db push
   echo "[entrypoint] Seeding database..."
   tsx prisma/seed.ts
   touch "$SEED_MARKER"

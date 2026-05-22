@@ -73,8 +73,14 @@ docker buildx create --name multiarch --use
 docker buildx inspect --bootstrap
 
 # 构建 amd64 + arm64 并推送
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -t ishaohao/novamind:latest --push .
+docker buildx build --platform linux/amd64,linux/arm64 -t ishaohao/novamind:latest --push .
+```
+
+### 修复 ARM64 模拟支持后构建双架构
+
+```bash
+docker run --privileged --rm tonistiigi/binfmt --install all
+docker buildx build --platform linux/amd64,linux/arm64 -t ishaohao/novamind:latest --push .
 ```
 
 ### 服务器使用预构建镜像
