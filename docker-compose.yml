@@ -11,8 +11,6 @@ services:
       POSTGRES_DB: novamind
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U novamind"]
       interval: 10s
@@ -28,8 +26,6 @@ services:
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -49,19 +45,19 @@ services:
     environment:
       - DATABASE_URL=postgresql://novamind:novamind_password@postgres:5432/novamind?schema=public
       - REDIS_URL=redis://redis:6379
-      - AUTH_SECRET=${AUTH_SECRET:-change-me-to-a-random-string-at-least-32-chars}
-      - JWT_SECRET=${JWT_SECRET:-change-me-to-a-random-jwt-secret-key}
       - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
-      - NODE_ENV=${NODE_ENV:-production}
-      - SMTP_HOST=${SMTP_HOST:-smtp.example.com}
+      - NODE_ENV=production
+      - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-587}
-      - SMTP_USER=${SMTP_USER:-noreply@example.com}
+      - SMTP_USER=${SMTP_USER:-}
       - SMTP_PASS=${SMTP_PASS:-}
-      - SMTP_FROM=${SMTP_FROM:-NovaMind <noreply@example.com>}
+      - SMTP_FROM=${SMTP_FROM:-}
       - AI_PROVIDER=${AI_PROVIDER:-openai}
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_MODEL=${AI_MODEL:-gpt-4o-mini}
       - AI_BASE_URL=${AI_BASE_URL:-https://api.openai.com/v1}
+    volumes:
+      - app_data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,6 +70,8 @@ volumes:
   postgres_data:
     driver: local
   redis_data:
+    driver: local
+  app_data:
     driver: local
 
 networks:
