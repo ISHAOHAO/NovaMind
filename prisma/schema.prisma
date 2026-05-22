@@ -1,0 +1,231 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum QuestionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ActivationCodeStatus {
+  UNUSED
+  USED
+  EXPIRED
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  password      String
+  name          String    @default("")
+  avatar        String?
+  role          UserRole  @default(USER)
+  isActivated   Boolean   @default(false)
+  activatedAt   DateTime?
+  banned        Boolean   @default(false)
+  bannedReason  String?
+  bannedAt      DateTime?
+  deletedAt     DateTime?
+  lastLoginAt   DateTime?
+  lastLoginIp   String?
+  deviceId      String?
+  todayUsedSeconds Int   @default(0)
+  lastUsedDate  DateTime?
+  activationCode ActivationCode?
+  sessions      UserSession[]
+  uploads       QuestionBank[]        @relation("BankUploader")
+  records       UserQuestionRecord[]
+  favorites     Favorite[]
+  notes         Note[]
+  auditLogs     AuditLog[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([email])
+  @@index([role])
+  @@index([banned])
+  @@index([isActivated])
+  @@index([createdAt])
+}
+
+model UserSession {
+  id          String    @id @default(uuid())
+  userId      String
+  token       String    @unique
+  deviceId    String
+  ip          String?
+  userAgent   String?
+  isActive    Boolean   @default(true)
+  lastPingAt  DateTime  @default(now())
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@index([lastPingAt])
+  @@index([isActive])
+}
+
+model ActivationCode {
+  id          String               @id @default(uuid())
+  code        String               @unique
+  prefix      String               @default("")
+  batchId     String
+  duration    Int                  @default(0)
+  isUsed      Boolean              @default(false)
+  usedById    String?              @unique
+  usedAt      DateTime?
+  expiresAt   DateTime?
+  status      ActivationCodeStatus @default(UNUSED)
+  usedBy      User?                @relation(fields: [usedById], references: [id])
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  @@index([code])
+  @@index([batchId])
+  @@index([status])
+  @@index([isUsed])
+  @@index([expiresAt])
+}
+
+model QuestionBank {
+  id           String          @id @default(uuid())
+  title        String
+  description  String?
+  source       String          @default("")
+  category     String          @default("")
+  tags         String[]        @default([])
+  difficulty   Int             @default(1)
+  status       QuestionStatus  @default(PENDING)
+  isPublic     Boolean         @default(false)
+  uploaderId   String
+  reviewComment String?
+  reviewedById String?
+  reviewedAt   DateTime?
+  uploader     User            @relation("BankUploader", fields: [uploaderId], references: [id])
+  questions    Question[]
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@index([status])
+  @@index([category])
+  @@index([difficulty])
+  @@index([isPublic])
+  @@index([uploaderId])
+  @@index([createdAt])
+}
+
+model Question {
+  id          String              @id @default(uuid())
+  bankId      String
+  type        String              @default("single")
+  content     String
+  options     Json                @default("[]")
+  answer      String
+  analysis    String?
+  image       String?
+  sortOrder   Int                 @default(0)
+  bank        QuestionBank        @relation(fields: [bankId], references: [id], onDelete: Cascade)
+  records     UserQuestionRecord[]
+  favorites   Favorite[]
+  notes       Note[]
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@index([bankId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model UserQuestionRecord {
+  id          String    @id @default(uuid())
+  userId      String
+  questionId  String
+  userAnswer  String
+  isCorrect   Boolean
+  duration    Int       @default(0)
+  sessionId   String?
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question    Question  @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@index([userId])
+  @@index([questionId])
+  @@index([isCorrect])
+  @@index([createdAt])
+}
+
+model Favorite {
+  id          String    @id @default(uuid())
+  userId      String
+  questionId  String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question    Question  @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@unique([userId, questionId])
+  @@index([userId])
+}
+
+model Note {
+  id          String    @id @default(uuid())
+  userId      String
+  questionId  String
+  content     String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question    Question  @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([userId, questionId])
+  @@index([userId])
+}
+
+model SystemConfig {
+  id          String    @id @default(uuid())
+  key         String    @unique
+  value       String
+  description String    @default("")
+  updatedAt   DateTime  @updatedAt
+
+  @@index([key])
+}
+
+model AuditLog {
+  id          String    @id @default(uuid())
+  userId      String?
+  action      String
+  details     String?
+  ip          String?
+  userAgent   String?
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model RateLimit {
+  id          String    @id @default(uuid())
+  key         String    @unique
+  count       Int       @default(0)
+  resetAt     DateTime
+  createdAt   DateTime  @default(now())
+
+  @@index([key])
+  @@index([resetAt])
+}
