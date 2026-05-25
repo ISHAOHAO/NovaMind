@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   Save,
   RefreshCw,
@@ -26,6 +26,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import {
+  CUSTOM_PROVIDER_VALUE,
+  CUSTOM_MODEL_VALUE,
+  getProviderByValue,
+  getProviderOptions,
+} from "@/lib/ai-providers";
 
 interface Config {
   id: string;
@@ -45,7 +51,7 @@ interface ConfigItem {
   key: string;
   label: string;
   description: string;
-  type: "text" | "number" | "switch" | "password" | "select";
+  type: "text" | "number" | "switch" | "password" | "select" | "model_select" | "base_url";
   options?: { label: string; value: string }[];
 }
 
@@ -89,16 +95,11 @@ const configGroups: ConfigGroup[] = [
       label: "AI 提供商",
       description: "AI 服务提供商",
       type: "select",
-      options: [
-        { label: "OpenAI", value: "openai" },
-        { label: "智谱GLM", value: "zhipu" },
-        { label: "DeepSeek", value: "deepseek" },
-        { label: "自定义", value: "custom" },
-      ],
+      options: getProviderOptions(),
     },
-    { key: "ai_model", label: "AI 模型", description: "使用的 AI 模型名称", type: "text" },
+    { key: "ai_model", label: "AI 模型", description: "使用的 AI 模型名称", type: "model_select" },
     { key: "ai_api_key", label: "API 密钥", description: "AI 服务 API 密钥", type: "password" },
-    { key: "ai_base_url", label: "API 地址", description: "AI 服务基础 URL", type: "text" },
+    { key: "ai_base_url", label: "API 地址", description: "AI 服务基础 URL", type: "base_url" },
     { key: "ai_trial_daily_limit", label: "体验版每日AI次数", description: "未激活用户每天可使用 AI 的次数（0=不限制）", type: "number" },
   ],
   },
@@ -128,10 +129,39 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingGroup, setSavingGroup] = useState<string | null>(null);
+  const [isCustomModel, setIsCustomModel] = useState(false);
 
   useEffect(() => {
     loadConfigs();
   }, []);
+
+  const currentProvider = getProviderByValue(configs["ai_provider"] || "");
+
+  const providerModelOptions = currentProvider && currentProvider.value !== CUSTOM_PROVIDER_VALUE
+    ? [...currentProvider.models, { label: "✏️ 自定义模型", value: CUSTOM_MODEL_VALUE }]
+    : [];
+
+  const isCurrentModelCustom =
+    isCustomModel ||
+    (!!currentProvider &&
+      currentProvider.value !== CUSTOM_PROVIDER_VALUE &&
+      !!configs["ai_model"] &&
+      !currentProvider.models.some((m) => m.value === configs["ai_model"]));
+
+  const handleProviderChange = useCallback(
+    (value: string) => {
+      const provider = getProviderByValue(value);
+      setConfigValue("ai_provider", value);
+      if (provider && provider.value !== CUSTOM_PROVIDER_VALUE) {
+        setConfigValue("ai_base_url", provider.baseUrl);
+        if (provider.models.length > 0) {
+          setConfigValue("ai_model", provider.models[0].value);
+          setIsCustomModel(false);
+        }
+      }
+    },
+    []
+  );
 
   const loadConfigs = async () => {
     setLoading(true);
@@ -306,7 +336,11 @@ export default function SettingsPage() {
                         {item.type === "select" ? (
                           <Select
                             value={getConfigValue(item.key)}
-                            onValueChange={(v) => setConfigValue(item.key, v)}
+                            onValueChange={
+                              item.key === "ai_provider"
+                                ? handleProviderChange
+                                : (v) => setConfigValue(item.key, v)
+                            }
                           >
                             <SelectTrigger id={item.key}>
                               <SelectValue />
@@ -319,6 +353,70 @@ export default function SettingsPage() {
                               ))}
                             </SelectContent>
                           </Select>
+                        ) : item.type === "model_select" ? (
+                          currentProvider &&
+                          currentProvider.value !== CUSTOM_PROVIDER_VALUE ? (
+                            <div className="space-y-2">
+                              <Select
+                                value={
+                                  isCurrentModelCustom
+                                    ? CUSTOM_MODEL_VALUE
+                                    : getConfigValue(item.key)
+                                }
+                                onValueChange={(v) => {
+                                  if (v === CUSTOM_MODEL_VALUE) {
+                                    setIsCustomModel(true);
+                                    setConfigValue(item.key, "");
+                                  } else {
+                                    setIsCustomModel(false);
+                                    setConfigValue(item.key, v);
+                                  }
+                                }}
+                              >
+                                <SelectTrigger id={item.key}>
+                                  <SelectValue placeholder="选择模型..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {providerModelOptions.map((opt) => (
+                                    <SelectItem key={opt.value} value={opt.value}>
+                                      {opt.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              {isCurrentModelCustom && (
+                                <Input
+                                  id={item.key}
+                                  type="text"
+                                  value={getConfigValue(item.key)}
+                                  onChange={(e) =>
+                                    setConfigValue(item.key, e.target.value)
+                                  }
+                                  placeholder="输入自定义模型名称..."
+                                />
+                              )}
+                            </div>
+                          ) : (
+                            <Input
+                              id={item.key}
+                              type="text"
+                              value={getConfigValue(item.key)}
+                              onChange={(e) => setConfigValue(item.key, e.target.value)}
+                              placeholder={item.description}
+                            />
+                          )
+                        ) : item.type === "base_url" ? (
+                          <Input
+                            id={item.key}
+                            type="text"
+                            value={getConfigValue(item.key)}
+                            onChange={(e) => setConfigValue(item.key, e.target.value)}
+                            placeholder={item.description}
+                            disabled={
+                              !!currentProvider &&
+                              currentProvider.value !== CUSTOM_PROVIDER_VALUE
+                            }
+                          />
                         ) : item.type === "switch" ? null : (
                           <Input
                             id={item.key}
