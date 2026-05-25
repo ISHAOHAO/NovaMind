@@ -17,6 +17,7 @@ async function main() {
       name: "超级管理员",
       role: "SUPER_ADMIN",
       isActivated: true,
+      emailVerified: true,
       activatedAt: new Date(),
     },
   });
@@ -43,6 +44,11 @@ async function main() {
       key: "register_enabled",
       value: "true",
       description: "是否开放注册",
+    },
+    {
+      key: "email_verification_required",
+      value: "false",
+      description: "注册时是否需要邮箱验证",
     },
     {
       key: "register_ip_limit",
@@ -154,7 +160,7 @@ async function main() {
   for (const config of systemConfigs) {
     await prisma.systemConfig.upsert({
       where: { key: config.key },
-      update: { description: config.description },
+      update: { value: config.value, description: config.description },
       create: config,
     });
   }

@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { email, password } = validation.data;
+    const { account, password } = validation.data;
 
     const ip = getClientIp(req);
     const { allowed } = await rateLimit(`login:${ip}`, {
@@ -33,9 +33,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const user = await prisma.user.findUnique({ where: { email } });
+    const isEmail = account.includes("@");
+    const user = isEmail
+      ? await prisma.user.findUnique({ where: { email: account } })
+      : await prisma.user.findUnique({ where: { username: account } });
+
     if (!user) {
-      return Response.json({ error: "邮箱或密码错误" }, { status: 401 });
+      return Response.json({ error: "用户名或密码错误" }, { status: 401 });
     }
 
     if (user.banned) {
@@ -49,9 +53,20 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "该账号已注销" }, { status: 403 });
     }
 
+    const emailVerificationRequired = await getSystemConfig(
+      "email_verification_required",
+      "false"
+    );
+    if (emailVerificationRequired === "true" && !user.emailVerified) {
+      return Response.json(
+        { error: "请先验证邮箱后再登录", needVerify: true, email: user.email },
+        { status: 403 }
+      );
+    }
+
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      return Response.json({ error: "邮箱或密码错误" }, { status: 401 });
+      return Response.json({ error: "用户名或密码错误" }, { status: 401 });
     }
 
     const singleDeviceEnabled = await getSystemConfig(
@@ -116,10 +131,12 @@ export async function POST(req: NextRequest) {
       user: {
         id: user.id,
         email: user.email,
+        username: user.username,
         name: user.name,
         avatar: user.avatar,
         role: user.role,
         isActivated: user.isActivated,
+        emailVerified: user.emailVerified,
         createdAt: user.createdAt,
       },
     });

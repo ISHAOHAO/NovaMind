@@ -11,6 +11,15 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "未登录" }, { status: 401 });
     }
 
+    const cooldownKey = `verify_code_sent:${payload.userId}`;
+    const inCooldown = await redis.get(cooldownKey);
+    if (inCooldown) {
+      return Response.json(
+        { error: "发送过于频繁，请60秒后再试" },
+        { status: 429 }
+      );
+    }
+
     const user = await prisma.user.findUnique({
       where: { id: payload.userId },
       select: { email: true },
@@ -23,8 +32,18 @@ export async function POST(req: NextRequest) {
     const code = String(Math.floor(100000 + Math.random() * 900000));
 
     await redis.setex(`verify_code:${payload.userId}`, 600, code);
+    await redis.setex(cooldownKey, 60, "1");
 
-    await sendVerificationEmail(user.email, code);
+    const sent = await sendVerificationEmail(user.email, code);
+
+    if (!sent) {
+      await redis.del(`verify_code:${payload.userId}`);
+      await redis.del(cooldownKey);
+      return Response.json(
+        { error: "邮件发送失败，请确认邮件服务已配置" },
+        { status: 500 }
+      );
+    }
 
     return Response.json({ message: "验证码已发送至您的邮箱" });
   } catch (error) {

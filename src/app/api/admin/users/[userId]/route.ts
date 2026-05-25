@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireAdmin, TokenPayload } from "@/lib/auth";
 import prisma from "@/lib/prisma";
+import bcrypt from "bcryptjs";
 import { UserRole } from "@prisma/client";
 
 const VALID_ROLES: UserRole[] = ["USER", "ADMIN", "SUPER_ADMIN"];
@@ -14,10 +15,12 @@ export const GET = requireAdmin(async (req: NextRequest, { params }: { params: P
       select: {
         id: true,
         email: true,
+        username: true,
         name: true,
         avatar: true,
         role: true,
         isActivated: true,
+        emailVerified: true,
         activatedAt: true,
         banned: true,
         bannedReason: true,
@@ -127,6 +130,21 @@ export const PUT = requireAdmin(async (req: NextRequest, { params }: { params: P
       actions.push(`修改角色为: ${body.role}`);
     }
 
+    if (typeof body.name === "string" && body.name.trim().length > 0 && body.name.trim().length <= 50) {
+      updateData.name = body.name.trim();
+      actions.push("修改昵称");
+    }
+
+    if (typeof body.emailVerified === "boolean") {
+      updateData.emailVerified = body.emailVerified;
+      actions.push(body.emailVerified ? "标记邮箱已验证" : "取消邮箱验证");
+    }
+
+    if (typeof body.newPassword === "string" && body.newPassword.length >= 6) {
+      updateData.password = await bcrypt.hash(body.newPassword, 12);
+      actions.push("重置密码");
+    }
+
     if (Object.keys(updateData).length === 0) {
       return Response.json({ error: "没有可更新的字段" }, { status: 400 });
     }
@@ -196,7 +214,11 @@ export const DELETE = requireAdmin(async (req: NextRequest, { params }: { params
 
     await prisma.user.update({
       where: { id: userId },
-      data: { deletedAt: new Date() },
+      data: {
+        deletedAt: new Date(),
+        email: `deleted_${userId}@deleted`,
+        username: null,
+      },
     });
 
     await prisma.auditLog.create({

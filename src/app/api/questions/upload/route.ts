@@ -6,6 +6,19 @@ import { invalidatePattern } from "@/lib/redis";
 const VALID_TYPES = ["single", "multiple", "truefalse", "fillblank", "cloze"];
 const MAX_QUESTIONS = 500;
 
+interface NormalizedQuestion {
+  type: string;
+  content: string;
+  options: { key: string; value: string }[];
+  answer: string;
+  analysis: string;
+  image?: string;
+  sortOrder: number;
+}
+
+// ============================================================
+// 1. JSON Parser
+// ============================================================
 async function parseJsonFile(content: string) {
   const parsed = JSON.parse(content);
   if (Array.isArray(parsed)) return parsed;
@@ -14,12 +27,56 @@ async function parseJsonFile(content: string) {
   throw new Error("文件格式不正确，请使用 JSON 数组格式");
 }
 
+// ============================================================
+// 2. Word (.docx) Parser — with image extraction
+// ============================================================
 async function parseWordDocx(buffer: Buffer) {
   const mammoth = (await import("mammoth")).default;
-  const result = await mammoth.extractRawText({ buffer });
-  return result.value;
+
+  const imageData: string[] = [];
+
+  const result = await mammoth.convertToHtml(
+    { buffer },
+    {
+      convertImage: mammoth.images.imgElement((image) => {
+        return image.readAsBase64String().then((b64) => {
+          const dataUri = `data:${image.contentType};base64,${b64}`;
+          return { src: dataUri };
+        });
+      }),
+    }
+  );
+
+  const text = htmlToTextWithImageMarkers(result.value, imageData);
+
+  return { text, imageData, messages: result.messages };
 }
 
+function htmlToTextWithImageMarkers(html: string, imageData: string[]): string {
+  return html
+    .replace(/<img[^>]+src="([^"]+)"[^>]*\/?>/gi, (_, src) => {
+      const idx = imageData.length;
+      imageData.push(src);
+      return `[IMG_${idx}]`;
+    })
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<\/h[1-6]>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#?\w+;/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// ============================================================
+// 3. Excel (.xlsx) Parser
+// ============================================================
 async function parseExcelXlsx(buffer: Buffer) {
   const XLSX = await import("xlsx");
   const workbook = XLSX.read(buffer, { type: "buffer" });
@@ -33,7 +90,6 @@ async function parseExcelXlsx(buffer: Buffer) {
 
   const header = rows[0].map((h: any) => String(h || "").trim().toLowerCase());
 
-  // Auto-detect column mapping
   const colMap: Record<string, number> = {};
   for (let i = 0; i < header.length; i++) {
     const h = header[i];
@@ -46,9 +102,9 @@ async function parseExcelXlsx(buffer: Buffer) {
   }
 
   if (colMap.content === undefined || colMap.answer === undefined) {
-      throw new Error(
-        "Excel 表头需要包含【题目】和【答案】列。推荐格式: 类型 | 题目 | 选项 | 答案 | 解析"
-      );
+    throw new Error(
+      "Excel 表头需要包含【题目】和【答案】列。推荐格式: 类型 | 题目 | 选项 | 答案 | 解析 | 图片"
+    );
   }
 
   const questions: any[] = [];
@@ -71,11 +127,10 @@ async function parseExcelXlsx(buffer: Buffer) {
     let options: { key: string; value: string }[] = [];
     if (colMap.options !== undefined && row[colMap.options]) {
       const raw = String(row[colMap.options]).trim();
-      // Support "A.xxx;B.yyy" or "A:xxx|B:yyy" or "A、xxx，B、yyy"
       const parts = raw.split(/[;；|｜\n]+/).filter(Boolean);
       if (parts.length >= 2) {
         options = parts.map((part) => {
-          const match = part.match(/^([A-Z])[.、:：]\s*(.+)/);
+          const match = part.match(/^([A-E])[.、:：]\s*(.+)/);
           if (match) {
             return { key: match[1], value: match[2].trim() };
           }
@@ -84,66 +139,49 @@ async function parseExcelXlsx(buffer: Buffer) {
       }
     }
 
+    const image = colMap.image !== undefined
+      ? String(row[colMap.image] || "").trim() || undefined
+      : undefined;
+
     questions.push({
       type: VALID_TYPES.includes(type) ? type : "single",
       content,
       options,
       answer,
       analysis,
-      image: colMap.image !== undefined ? String(row[colMap.image] || "").trim() || undefined : undefined,
-      sortOrder: i - 1,
+      image,
+      sortOrder: questions.length,
     });
   }
 
   return questions;
 }
 
-function extractQuestionsFromText(text: string): any[] {
+// ============================================================
+// 4. Extract questions from plain text (used for .docx and fallback)
+// ============================================================
+
+const QUESTION_SPLIT_PATTERNS = [
+  /(?:^|\n)(?=\d+[.、)）]\s*\S)/,
+  /(?:^|\n)(?=第\s*\d+\s*题)/,
+  /(?:^|\n)(?=Q\d+[:：])/,
+  /(?:^|\n)(?=[一二三四五六七八九十]+[.、)）])/,
+  /(?:^|\n)(?=题目\s*\d+\s*[:：])/,
+];
+
+function extractQuestionsFromText(text: string, imageData?: string[]): any[] {
   const questions: any[] = [];
-  const lines = text.split(/\n\s*\n/).filter(Boolean);
-  // Also split by numbered patterns
-  const allBlocks: string[] = [];
-  for (const line of lines) {
-    const sub = line.split(/(?=^\d+[.、)）]\s*)/m);
-    allBlocks.push(...sub.filter(Boolean));
-  }
 
-  for (const block of allBlocks) {
+  const blocks = splitIntoBlocks(text);
+
+  for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
+    const block = blocks[blockIdx];
     const trimmed = block.trim();
-    if (trimmed.length < 10) continue;
+    if (trimmed.length < 5) continue;
 
-    const q: any = { type: "single", content: trimmed, options: [], answer: "", analysis: "", sortOrder: 0 };
-
-    // Try to extract options (A.xxx, B.yyy)
-    const optionRegex = /([A-E])[.、:：]\s*(.+?)(?=\s*[A-E][.、:：]|\s*答案[：:]*|\s*解析[：:]*|\s*$)/g;
-    const optionMatches = [...trimmed.matchAll(optionRegex)];
-
-    if (optionMatches.length >= 2) {
-      q.options = optionMatches.map((m) => ({ key: m[1], value: m[2].trim() }));
-      // Remove options from content for cleaner display
-      let contentPart = trimmed;
-      for (const m of optionMatches) {
-        contentPart = contentPart.replace(m[0], "");
-      }
-      q.content = contentPart.replace(/\n{2,}/g, "\n").trim();
-    }
-
-    // Try to extract answer
-    const answerMatch = trimmed.match(/答案[：:]\s*(.+)/);
-    if (answerMatch) {
-      q.answer = answerMatch[1].trim();
-      // Clean content
-      q.content = q.content.replace(answerMatch[0], "").trim();
-    }
-
-    // Try to extract analysis
-    const analysisMatch = trimmed.match(/解析[：:]\s*([\s\S]+)/);
-    if (analysisMatch) {
-      q.analysis = analysisMatch[1].trim();
-      q.content = q.content.replace(analysisMatch[0], "").trim();
-    }
-
-    if (q.content.length >= 5) {
+    const q = parseSingleBlock(trimmed, imageData);
+    if (q && q.content.length >= 2) {
+      q.sortOrder = questions.length;
       questions.push(q);
     }
   }
@@ -151,8 +189,242 @@ function extractQuestionsFromText(text: string): any[] {
   return questions;
 }
 
-function validateAndNormalize(rawQuestions: any[]): { questions: any[]; errors: string[] } {
-  const parsedQuestions: any[] = [];
+function splitIntoBlocks(text: string): string[] {
+  const cleaned = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  const blankLineBlocks = cleaned.split(/\n\n+/).filter((b) => b.trim());
+
+  const result: string[] = [];
+  for (const block of blankLineBlocks) {
+    // Some formats put multiple questions in one blank-line-separated block
+    // Try to split further by numbered prefixes
+    let remaining = block;
+    const parts: string[] = [];
+
+    while (remaining.length > 0) {
+      let bestMatch: { index: number; length: number } | null = null;
+
+      for (const pattern of QUESTION_SPLIT_PATTERNS) {
+        const m = remaining.match(pattern);
+        if (m && m.index !== undefined) {
+          // We want to be precise: the split should start at the pattern beginning
+          const splitAt = m.index + (m[0].startsWith("\n") ? 1 : 0);
+          if (splitAt > 0 && (!bestMatch || splitAt < bestMatch.index)) {
+            bestMatch = { index: splitAt, length: 0 };
+          }
+        }
+      }
+
+      if (bestMatch) {
+        parts.push(remaining.slice(0, bestMatch.index).trim());
+        remaining = remaining.slice(bestMatch.index);
+      } else {
+        parts.push(remaining.trim());
+        break;
+      }
+    }
+
+    result.push(...parts.filter((p) => p.length > 0));
+  }
+
+  return result;
+}
+
+// Line-level extraction patterns
+const OPTION_LINE = /^([A-E])[.、:：)）]\s*(.+)$/;
+const ANSWER_LINE = /^(?:正确答案|答案|Answer)[:：是为]?\s*(.+)$/i;
+const ANALYSIS_LINE = /^(?:解析|分析|答案解析|Analysis)[:：]?\s*(.+)$/i;
+const IMAGE_MARKER = /\[IMG_(\d+)\]/g;
+
+function parseSingleBlock(block: string, imageData?: string[]): any | null {
+  const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return null;
+
+  const images: string[] = [];
+  let contentLines: string[] = [];
+  const options: { key: string; value: string }[] = [];
+  let answer = "";
+  let analysis = "";
+  let pastOptions = false;
+  let pastAnswer = false;
+  let foundAnswer = false;
+  let foundAnalysis = false;
+
+  for (const rawLine of lines) {
+    // 1) Extract image markers
+    let line = rawLine;
+    let imgMatch;
+    IMAGE_MARKER.lastIndex = 0;
+    while ((imgMatch = IMAGE_MARKER.exec(rawLine)) !== null) {
+      const imgIdx = parseInt(imgMatch[1], 10);
+      if (imageData && imageData[imgIdx]) {
+        images.push(imageData[imgIdx]);
+      }
+      line = line.replace(imgMatch[0], "").trim();
+    }
+
+    if (!line) continue;
+
+    // 2) Check for answer
+    const ansMatch = line.match(ANSWER_LINE);
+    if (ansMatch) {
+      answer = ansMatch[1].trim();
+      foundAnswer = true;
+      pastAnswer = true;
+      continue;
+    }
+
+    // 3) Check for analysis (after answer found)
+    const anaMatch = line.match(ANALYSIS_LINE);
+    if (anaMatch) {
+      analysis = anaMatch[1].trim();
+      foundAnalysis = true;
+      continue;
+    }
+
+    // 4) If we've seen analysis, append to it
+    if (foundAnalysis) {
+      analysis += "\n" + line;
+      continue;
+    }
+
+    // 5) Check for option lines
+    const optMatch = line.match(OPTION_LINE);
+    if (optMatch) {
+      options.push({ key: optMatch[1], value: optMatch[2].trim() });
+      pastOptions = true;
+      continue;
+    }
+
+    // 6) If we're past options but haven't found answer, check inline
+    if (pastOptions && !foundAnswer) {
+      const inlineAns = line.match(/答案[:：]\s*(.+)/);
+      if (inlineAns) {
+        answer = inlineAns[1].trim();
+        foundAnswer = true;
+        pastAnswer = true;
+        continue;
+      }
+      const inlineAna = line.match(/解析[:：]\s*(.+)/);
+      if (inlineAna) {
+        analysis = inlineAna[1].trim();
+        foundAnalysis = true;
+        continue;
+      }
+    }
+
+    // 7) Otherwise it's content
+    if (!pastOptions || options.length === 0) {
+      contentLines.push(line);
+    } else if (!pastAnswer) {
+      // Past options but not yet at answer — could be content or stray lines
+      // Check if it looks like an option prefix
+      if (line.match(/^[A-E][.、:：)]/) || line.match(/^答案/) || line.match(/^解析/)) {
+        // Retry matching
+        const retryAns = line.match(ANSWER_LINE);
+        if (retryAns) { answer = retryAns[1].trim(); foundAnswer = true; pastAnswer = true; continue; }
+        const retryAna = line.match(ANALYSIS_LINE);
+        if (retryAna) { analysis = retryAna[1].trim(); foundAnalysis = true; continue; }
+        const retryOpt = line.match(OPTION_LINE);
+        if (retryOpt) { options.push({ key: retryOpt[1], value: retryOpt[2].trim() }); continue; }
+      }
+      contentLines.push(line);
+    }
+  }
+
+  let content = contentLines.join("\n").trim();
+
+  // Remove common leading number patterns from content
+  content = content.replace(/^\d+[.、)）]\s*/, "");
+  content = content.replace(/^第\s*\d+\s*题\s*[:：]?\s*/, "");
+  content = content.replace(/^Q\d+[:：]\s*/i, "");
+  content = content.replace(/^[一二三四五六七八九十]+[.、)）]\s*/, "");
+  content = content.replace(/^题目\s*\d+\s*[:：]\s*/, "");
+
+  // Auto-detect type
+  let detectedType = detectQuestionType(content, options, answer);
+
+  // Build question
+  const q: any = {
+    type: detectedType,
+    content,
+    options,
+    answer,
+    analysis,
+    sortOrder: 0,
+  };
+
+  if (images.length > 0) {
+    q.image = images[0];
+    if (images.length > 1) {
+      // Add additional images as markers in content
+      const extraMarkers = images.slice(1).map((uri) => `[图片]`).join(" ");
+      q.content = (q.content + " " + extraMarkers).trim();
+    }
+  }
+
+  // Clean empty options for truefalse/fillblank
+  if (["truefalse", "fillblank"].includes(detectedType)) {
+    q.options = [];
+  }
+
+  return q;
+}
+
+function detectQuestionType(
+  content: string,
+  options: { key: string; value: string }[],
+  answer: string
+): string {
+  const lowerAns = answer.toLowerCase().trim();
+
+  // Check if it's true/false
+  const trueValues = ["对", "正确", "true", "t", "是", "yes", "y", "√", "✓", "✔"];
+  const falseValues = ["错", "错误", "false", "f", "否", "no", "n", "×", "✗", "✘"];
+  if (
+    trueValues.includes(lowerAns) ||
+    falseValues.includes(lowerAns)
+  ) {
+    return "truefalse";
+  }
+
+  // Check for fill-in-blank
+  if (
+    content.includes("____") ||
+    content.includes("___") ||
+    content.includes("（  ）") ||
+    content.includes("(  )") ||
+    content.includes("（ ）") ||
+    content.includes("()")
+  ) {
+    return "fillblank";
+  }
+
+  // Has options — check for multiple choice
+  const validOptions = options.filter((o) => o.value.trim());
+  if (validOptions.length >= 2) {
+    // If answer contains commas or multiple letters, it's likely multiple
+    const answerParts = answer.split(/[,，、\s]+/).filter(Boolean);
+    if (answerParts.length > 1) {
+      return "multiple";
+    }
+    return "single";
+  }
+
+  return "single";
+}
+
+// ============================================================
+// 5. Validate & Normalize
+// ============================================================
+function validateAndNormalize(
+  rawQuestions: any[]
+): { questions: NormalizedQuestion[]; errors: string[] } {
+  const parsedQuestions: NormalizedQuestion[] = [];
   const errors: string[] = [];
 
   for (let i = 0; i < rawQuestions.length; i++) {
@@ -165,18 +437,47 @@ function validateAndNormalize(rawQuestions: any[]): { questions: any[]; errors: 
     const answer = typeof q.answer === "string" ? q.answer.trim() : "";
     if (!answer) rowErrors.push("缺少答案");
 
-    const type = q.type || "single";
-    if (!VALID_TYPES.includes(type)) rowErrors.push(`无效的题目类型: ${type}`);
+    let type = q.type || "single";
+    if (!VALID_TYPES.includes(type)) {
+      type = "single";
+    }
 
     let options = q.options || [];
     if (typeof options === "string") {
-      try { options = JSON.parse(options); } catch { options = []; }
+      try {
+        options = JSON.parse(options);
+      } catch {
+        options = [];
+      }
     }
     if (!Array.isArray(options)) options = [];
+
+    // For single/multiple with options, verify answer is valid
+    if (
+      (type === "single" || type === "multiple") &&
+      options.length > 0 &&
+      !["truefalse", "fillblank", "cloze"].includes(type)
+    ) {
+      const optionKeys = options.map((o: any) => o.key);
+      const answerKeys = answer.split(/[,，、\s]+/).filter(Boolean);
+      const invalidKeys = answerKeys.filter((k: string) => !optionKeys.includes(k));
+      if (invalidKeys.length > 0 && answerKeys.length === invalidKeys.length) {
+        // All answer keys invalid — but don't fail, just warn
+        // rowErrors.push(`答案中的选项 "${invalidKeys.join(",")}" 在选项中不存在`);
+      }
+    }
 
     if (rowErrors.length > 0) {
       errors.push(`第 ${i + 1} 题: ${rowErrors.join(", ")}`);
       continue;
+    }
+
+    let image = q.image || undefined;
+    // Validate image is a valid data URI
+    if (image && typeof image === "string") {
+      if (!image.startsWith("data:image/") && !image.startsWith("http")) {
+        image = undefined;
+      }
     }
 
     parsedQuestions.push({
@@ -184,8 +485,8 @@ function validateAndNormalize(rawQuestions: any[]): { questions: any[]; errors: 
       content,
       options: ["truefalse", "fillblank"].includes(type) ? [] : options,
       answer,
-      analysis: (q.analysis || "").trim(),
-      image: q.image || undefined,
+      analysis: typeof q.analysis === "string" ? q.analysis.trim() : "",
+      image,
       sortOrder: i,
     });
   }
@@ -193,6 +494,9 @@ function validateAndNormalize(rawQuestions: any[]): { questions: any[]; errors: 
   return { questions: parsedQuestions, errors };
 }
 
+// ============================================================
+// 6. POST Handler
+// ============================================================
 export async function POST(req: NextRequest) {
   try {
     const user = await authenticateRequest(req);
@@ -215,6 +519,7 @@ export async function POST(req: NextRequest) {
 
     let rawQuestions: any[];
 
+    // -- JSON --
     if (
       fileName.endsWith(".json") ||
       mimeType === "application/json"
@@ -225,22 +530,31 @@ export async function POST(req: NextRequest) {
       } catch {
         return Response.json({ error: "JSON 文件格式不正确" }, { status: 400 });
       }
-    } else if (
+    }
+    // -- Word (.docx) --
+    else if (
       fileName.endsWith(".docx") ||
-      mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      mimeType ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ) {
-      const text = await parseWordDocx(buffer);
+      const { text, imageData } = await parseWordDocx(buffer);
       if (!text.trim()) {
         return Response.json({ error: "Word 文档内容为空" }, { status: 400 });
       }
-      rawQuestions = extractQuestionsFromText(text);
+      rawQuestions = extractQuestionsFromText(text, imageData);
       if (rawQuestions.length === 0) {
-        return Response.json({
-          error: "未能从 Word 文档中解析出题目，请确保格式为: 题目编号 + 题目内容 + 选项(A.B.C.D) + 答案 + 解析",
-          rawText: text.slice(0, 500),
-        }, { status: 400 });
+        return Response.json(
+          {
+            error:
+              "未能从 Word 文档中解析出题目，请确保格式为: 题目编号 + 题目内容 + 选项(A.B.C.D) + 答案 + 解析",
+            rawText: text.slice(0, 500),
+          },
+          { status: 400 }
+        );
       }
-    } else if (
+    }
+    // -- Excel (.xlsx / .xls) --
+    else if (
       fileName.endsWith(".xlsx") ||
       fileName.endsWith(".xls") ||
       mimeType.includes("spreadsheet") ||
@@ -249,12 +563,21 @@ export async function POST(req: NextRequest) {
       try {
         rawQuestions = await parseExcelXlsx(buffer);
       } catch (err: any) {
-        return Response.json({ error: err.message || "Excel 文件解析失败" }, { status: 400 });
+        return Response.json(
+          { error: err.message || "Excel 文件解析失败" },
+          { status: 400 }
+        );
       }
-    } else {
-      return Response.json({
-        error: "不支持的文件格式，请上传 JSON、Word (.docx) 或 Excel (.xlsx) 文件",
-      }, { status: 400 });
+    }
+    // -- Unsupported --
+    else {
+      return Response.json(
+        {
+          error:
+            "不支持的文件格式，请上传 JSON、Word (.docx) 或 Excel (.xlsx) 文件",
+        },
+        { status: 400 }
+      );
     }
 
     if (rawQuestions.length === 0) {
@@ -262,18 +585,26 @@ export async function POST(req: NextRequest) {
     }
 
     if (rawQuestions.length > MAX_QUESTIONS) {
-      return Response.json({ error: `单次最多上传 ${MAX_QUESTIONS} 道题目` }, { status: 400 });
+      return Response.json(
+        { error: `单次最多上传 ${MAX_QUESTIONS} 道题目` },
+        { status: 400 }
+      );
     }
 
-    const { questions: parsedQuestions, errors } = validateAndNormalize(rawQuestions);
+    const { questions: parsedQuestions, errors } =
+      validateAndNormalize(rawQuestions);
 
     if (parsedQuestions.length === 0) {
-      return Response.json({
-        error: "没有有效的题目可以导入",
-        details: errors,
-      }, { status: 400 });
+      return Response.json(
+        {
+          error: "没有有效的题目可以导入",
+          details: errors,
+        },
+        { status: 400 }
+      );
     }
 
+    // -- Save to bank if bankId provided --
     if (bankId) {
       const bank = await prisma.questionBank.findUnique({
         where: { id: bankId },
@@ -284,8 +615,15 @@ export async function POST(req: NextRequest) {
         return Response.json({ error: "题库不存在" }, { status: 404 });
       }
 
-      if (bank.uploaderId !== user.userId && user.role !== "ADMIN" && user.role !== "SUPER_ADMIN") {
-        return Response.json({ error: "无权向该题库添加题目" }, { status: 403 });
+      if (
+        bank.uploaderId !== user.userId &&
+        user.role !== "ADMIN" &&
+        user.role !== "SUPER_ADMIN"
+      ) {
+        return Response.json(
+          { error: "无权向该题库添加题目" },
+          { status: 403 }
+        );
       }
 
       const created = await prisma.$transaction(
@@ -316,6 +654,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // -- Return parsed questions for preview --
     return Response.json({
       message: `成功解析 ${parsedQuestions.length} 道题目`,
       data: {

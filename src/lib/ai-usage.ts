@@ -59,3 +59,63 @@ export async function getAiUsageToday(userId: string): Promise<{
   );
   return { used, limit };
 }
+
+// ============================================================
+// Upload Analysis (monthly limit)
+// ============================================================
+function getUploadAnalyzeKey(userId: string): string {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  return `ai_upload_analyze:${userId}:${now.getFullYear()}-${month}`;
+}
+
+export async function checkUploadAnalyzeLimit(userId: string): Promise<{
+  allowed: boolean;
+  used: number;
+  limit: number;
+  message?: string;
+}> {
+  const limit = parseInt(
+    await getSystemConfig("ai_upload_analyze_monthly_limit", "10"),
+    10
+  );
+
+  const key = getUploadAnalyzeKey(userId);
+  const used = parseInt((await redis.get(key)) || "0", 10);
+
+  if (used >= limit) {
+    return {
+      allowed: false,
+      used,
+      limit,
+      message: `本月上传分析次数已达上限 (${used}/${limit})，请下月再试`,
+    };
+  }
+
+  return { allowed: true, used, limit };
+}
+
+export async function incrementUploadAnalyzeUsage(userId: string): Promise<number> {
+  const key = getUploadAnalyzeKey(userId);
+  const newCount = await redis.incr(key);
+  // Expire at end of month
+  const now = new Date();
+  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const ttlSeconds = Math.ceil((endOfMonth.getTime() - now.getTime()) / 1000);
+  await redis.expire(key, ttlSeconds);
+  return newCount;
+}
+
+export async function getUploadAnalyzeRemaining(userId: string): Promise<{
+  used: number;
+  limit: number;
+  remaining: number;
+}> {
+  const key = getUploadAnalyzeKey(userId);
+  const used = parseInt((await redis.get(key)) || "0", 10);
+  const limit = parseInt(
+    await getSystemConfig("ai_upload_analyze_monthly_limit", "10"),
+    10
+  );
+  return { used, limit, remaining: Math.max(0, limit - used) };
+}

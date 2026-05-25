@@ -33,12 +33,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const user = await prisma.user.findUnique({
-      where: { email: email.toLowerCase().trim() },
+    const cleanEmail = email.toLowerCase().trim();
+
+    const cooldownKey = `email_sent_cooldown:${cleanEmail}`;
+    const inCooldown = await redis.get(cooldownKey);
+    if (inCooldown) {
+      return NextResponse.json(
+        { message: "如果该邮箱已注册，重置密码链接已发送" },
+        { status: 200 }
+      );
+    }
+
+    const user = await prisma.user.findFirst({
+      where: { email: cleanEmail, deletedAt: null },
       select: { id: true, email: true, deletedAt: true },
     });
 
-    if (!user || user.deletedAt) {
+    if (!user) {
       return NextResponse.json(
         { message: "如果该邮箱已注册，重置密码链接已发送" },
         { status: 200 }
@@ -52,6 +63,7 @@ export async function POST(request: NextRequest) {
     );
 
     await redis.setex(`pwd_reset:${user.id}`, RESET_TOKEN_EXPIRY, resetToken);
+    await redis.setex(cooldownKey, 60, "1");
 
     const baseUrl =
       process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";

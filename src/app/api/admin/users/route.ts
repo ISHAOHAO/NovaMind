@@ -22,6 +22,7 @@ export const GET = requireAdmin(async (req: NextRequest) => {
       where.OR = [
         { email: { contains: search, mode: "insensitive" } },
         { name: { contains: search, mode: "insensitive" } },
+        { username: { contains: search, mode: "insensitive" } },
       ];
     }
     if (role) {
@@ -34,6 +35,11 @@ export const GET = requireAdmin(async (req: NextRequest) => {
       where.isActivated = isActivated === "true";
     }
 
+    const emailVerified = searchParams.get("emailVerified");
+    if (emailVerified === "true" || emailVerified === "false") {
+      where.emailVerified = emailVerified === "true";
+    }
+
     const [users, total] = await Promise.all([
       prisma.user.findMany({
         where,
@@ -43,10 +49,12 @@ export const GET = requireAdmin(async (req: NextRequest) => {
         select: {
           id: true,
           email: true,
+          username: true,
           name: true,
           avatar: true,
           role: true,
           isActivated: true,
+          emailVerified: true,
           activatedAt: true,
           banned: true,
           bannedReason: true,

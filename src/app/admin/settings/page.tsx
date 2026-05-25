@@ -63,6 +63,7 @@ const configGroups: ConfigGroup[] = [
       { key: "site_name", label: "站点名称", description: "网站顶部和标题显示的名称", type: "text" },
       { key: "site_description", label: "站点描述", description: "SEO 和网站简介描述", type: "text" },
       { key: "register_enabled", label: "开放注册", description: "是否允许新用户注册", type: "switch" },
+      { key: "email_verification_required", label: "注册邮箱验证", description: "注册时是否需要邮箱验证后才能登录", type: "switch" },
     ],
   },
   {
@@ -130,6 +131,10 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [savingGroup, setSavingGroup] = useState<string | null>(null);
   const [isCustomModel, setIsCustomModel] = useState(false);
+  const [smtpTesting, setSmtpTesting] = useState(false);
+  const [testEmail, setTestEmail] = useState("");
+  const [testEmailMsg, setTestEmailMsg] = useState("");
+  const [testEmailOk, setTestEmailOk] = useState(false);
 
   useEffect(() => {
     loadConfigs();
@@ -246,6 +251,40 @@ export default function SettingsPage() {
     } catch {
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSmtpTest = async () => {
+    if (!testEmail.trim()) {
+      setTestEmailMsg("请输入测试邮箱");
+      setTestEmailOk(false);
+      return;
+    }
+    setSmtpTesting(true);
+    setTestEmailMsg("");
+    try {
+      const token = localStorage.getItem("novamind_token");
+      const res = await fetch("/api/admin/smtp-test", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ email: testEmail.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setTestEmailMsg(data.message || "发送成功");
+        setTestEmailOk(true);
+      } else {
+        setTestEmailMsg(data.error || "发送失败");
+        setTestEmailOk(false);
+      }
+    } catch {
+      setTestEmailMsg("网络错误");
+      setTestEmailOk(false);
+    } finally {
+      setSmtpTesting(false);
     }
   };
 
@@ -432,6 +471,37 @@ export default function SettingsPage() {
                       </div>
                     ))}
                   </div>
+                  {group.title === "邮件设置" && (
+                    <div className="mt-4 space-y-3 rounded-lg border p-4">
+                      <div className="flex items-center gap-2">
+                        <Mail className="h-4 w-4 text-primary" />
+                        <span className="text-sm font-medium">SMTP 连接测试</span>
+                      </div>
+                      <div className="flex gap-2">
+                        <Input
+                          type="email"
+                          value={testEmail}
+                          onChange={(e) => { setTestEmail(e.target.value); setTestEmailMsg(""); }}
+                          placeholder="输入测试接收邮箱..."
+                          className="flex-1"
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleSmtpTest}
+                          disabled={smtpTesting}
+                        >
+                          {smtpTesting && <RefreshCw className="mr-1 h-3 w-3 animate-spin" />}
+                          测试发送
+                        </Button>
+                      </div>
+                      {testEmailMsg && (
+                        <p className={`text-xs ${testEmailOk ? "text-green-600" : "text-red-600"}`}>
+                          {testEmailMsg}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             );

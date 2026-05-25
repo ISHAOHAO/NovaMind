@@ -1,10 +1,12 @@
 import { NextRequest } from "next/server";
 import bcrypt from "bcryptjs";
 import prisma from "@/lib/prisma";
+import { redis } from "@/lib/redis";
 import { rateLimit, checkRegistrationLimit } from "@/lib/rate-limit";
 import { getClientIp, getDeviceFingerprint } from "@/lib/device";
 import { getSystemConfig } from "@/lib/config";
 import { registerSchema } from "@/lib/validations";
+import { sendVerificationEmail } from "@/lib/email";
 
 export async function POST(req: NextRequest) {
   try {
@@ -17,7 +19,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { email, password, name } = validation.data;
+    const { email, username, password, name } = validation.data;
 
     const registerEnabled = await getSystemConfig("register_enabled", "true");
     if (registerEnabled !== "true") {
@@ -84,11 +86,52 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const existingUser = await prisma.user.findUnique({
-      where: { email },
+    const emailVerificationRequired = await getSystemConfig(
+      "email_verification_required",
+      "false"
+    );
+
+    const existingUser = await prisma.user.findFirst({
+      where: { email, deletedAt: null },
     });
     if (existingUser) {
+      if (emailVerificationRequired === "true" && !existingUser.emailVerified) {
+        const cooldownKey = `email_sent_cooldown:${email}`;
+        const inCooldown = await redis.get(cooldownKey);
+        if (inCooldown) {
+          return Response.json(
+            { error: "验证码已发送，请60秒后再试" },
+            { status: 429 }
+          );
+        }
+
+        const code = String(Math.floor(100000 + Math.random() * 900000));
+        await redis.setex(`reg_verify:${email}`, 600, code);
+        await redis.setex(cooldownKey, 60, "1");
+        const sent = await sendVerificationEmail(email, code);
+
+        if (!sent) {
+          await redis.del(`reg_verify:${email}`);
+          await redis.del(cooldownKey);
+          return Response.json(
+            { error: "验证邮件发送失败，请确认邮件服务已配置" },
+            { status: 500 }
+          );
+        }
+
+        return Response.json(
+          { message: "该邮箱尚未验证，验证码已重新发送", needVerify: true },
+          { status: 200 }
+        );
+      }
       return Response.json({ error: "该邮箱已被注册" }, { status: 409 });
+    }
+
+    const existingUsername = await prisma.user.findFirst({
+      where: { username, deletedAt: null },
+    });
+    if (existingUsername) {
+      return Response.json({ error: "该用户名已被使用" }, { status: 409 });
     }
 
     const hashedPassword = await bcrypt.hash(password, 12);
@@ -96,18 +139,43 @@ export async function POST(req: NextRequest) {
     const user = await prisma.user.create({
       data: {
         email,
+        username,
         password: hashedPassword,
         name,
+        emailVerified: emailVerificationRequired !== "true",
       },
       select: {
         id: true,
         email: true,
+        username: true,
         name: true,
         role: true,
         isActivated: true,
+        emailVerified: true,
         createdAt: true,
       },
     });
+
+    if (emailVerificationRequired === "true") {
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      await redis.setex(`reg_verify:${email}`, 600, code);
+      await redis.setex(`email_sent_cooldown:${email}`, 60, "1");
+      const sent = await sendVerificationEmail(email, code);
+
+      if (!sent) {
+        await redis.del(`reg_verify:${email}`);
+        await redis.del(`email_sent_cooldown:${email}`);
+        return Response.json(
+          { error: "验证邮件发送失败，请确认邮件服务已配置" },
+          { status: 500 }
+        );
+      }
+
+      return Response.json(
+        { message: "注册成功，验证码已发送至您的邮箱，请验证后登录", user, needVerify: true },
+        { status: 201 }
+      );
+    }
 
     return Response.json(
       { message: "注册成功", user },

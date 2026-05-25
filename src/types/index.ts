@@ -1,10 +1,12 @@
 export interface User {
   id: string;
   email: string;
+  username?: string | null;
   name: string;
   avatar?: string | null;
   role: "USER" | "ADMIN" | "SUPER_ADMIN";
   isActivated: boolean;
+  emailVerified: boolean;
   activatedAt?: string | null;
   banned: boolean;
   bannedReason?: string | null;

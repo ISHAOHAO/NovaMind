@@ -20,6 +20,7 @@ import { Code2, Loader2 } from "lucide-react"
 export default function RegisterPage() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
+  const [username, setUsername] = useState("")
   const [name, setName] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -28,7 +29,7 @@ export default function RegisterPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
 
-    if (!name || !email || !password || !confirmPassword) {
+    if (!username || !name || !email || !password || !confirmPassword) {
       toast.error("请填写所有字段")
       return
     }
@@ -43,13 +44,18 @@ export default function RegisterPage() {
       return
     }
 
+    if (username.length < 2) {
+      toast.error("用户名至少 2 个字符")
+      return
+    }
+
     setLoading(true)
 
     try {
       const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, password }),
+        body: JSON.stringify({ username, name, email, password }),
       })
 
       const data = await res.json()
@@ -58,8 +64,13 @@ export default function RegisterPage() {
         throw new Error(data.error || "注册失败")
       }
 
-      toast.success("注册成功，请登录")
-      router.push("/login")
+      if (data.needVerify) {
+        toast.success(data.message || "注册成功，验证码已发送至您的邮箱")
+        router.push(`/verify-email?email=${encodeURIComponent(email)}`)
+      } else {
+        toast.success("注册成功，请登录")
+        router.push("/login")
+      }
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : "注册失败，请稍后重试"
@@ -84,11 +95,22 @@ export default function RegisterPage() {
       <form onSubmit={handleSubmit}>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="name">用户名</Label>
+            <Label htmlFor="username">用户名</Label>
+            <Input
+              id="username"
+              type="text"
+              placeholder="用于登录的用户名（中英文、数字、下划线）"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              disabled={loading}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="name">昵称</Label>
             <Input
               id="name"
               type="text"
-              placeholder="输入您的用户名"
+              placeholder="输入您的昵称"
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={loading}

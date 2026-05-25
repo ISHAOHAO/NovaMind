@@ -20,14 +20,14 @@ import { Code2, Loader2 } from "lucide-react"
 export default function LoginPage() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
-  const [email, setEmail] = useState("")
+  const [account, setAccount] = useState("")
   const [password, setPassword] = useState("")
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
 
-    if (!email || !password) {
-      toast.error("请填写邮箱和密码")
+    if (!account || !password) {
+      toast.error("请填写用户名/邮箱和密码")
       return
     }
 
@@ -37,12 +37,17 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ account, password }),
       })
 
       const data = await res.json()
 
       if (!res.ok) {
+        if (data.needVerify && data.email) {
+          toast.error("请先验证邮箱后再登录")
+          router.push(`/verify-email?email=${encodeURIComponent(data.email)}`)
+          return
+        }
         throw new Error(data.error || "登录失败")
       }
 
@@ -70,19 +75,19 @@ export default function LoginPage() {
         </div>
         <CardTitle className="text-2xl">登录账号</CardTitle>
         <CardDescription>
-          输入您的邮箱和密码登录 NovaMind
+          输入您的用户名/邮箱和密码登录 NovaMind
         </CardDescription>
       </CardHeader>
       <form onSubmit={handleSubmit}>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="email">邮箱</Label>
+            <Label htmlFor="account">用户名 / 邮箱</Label>
             <Input
-              id="email"
-              type="email"
-              placeholder="your@email.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              id="account"
+              type="text"
+              placeholder="输入用户名或邮箱"
+              value={account}
+              onChange={(e) => setAccount(e.target.value)}
               disabled={loading}
             />
           </div>

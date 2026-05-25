@@ -1,28 +1,26 @@
 import { NextRequest } from "next/server";
 import prisma from "@/lib/prisma";
 import { redis } from "@/lib/redis";
-import { authenticateRequest } from "@/lib/auth";
 
 const MAX_ATTEMPTS = 5;
 const ATTEMPT_WINDOW_S = 1800;
 
 export async function POST(req: NextRequest) {
   try {
-    const payload = await authenticateRequest(req);
-    if (!payload) {
-      return Response.json({ error: "未登录" }, { status: 401 });
+    const body = await req.json();
+    const { email, code } = body;
+
+    if (!email || typeof email !== "string") {
+      return Response.json({ error: "请输入邮箱" }, { status: 400 });
     }
 
-    const body = await req.json();
-    const rawCode = body.code;
-
-    if (!rawCode || typeof rawCode !== "string" || !rawCode.trim()) {
+    if (!code || typeof code !== "string" || !code.trim()) {
       return Response.json({ error: "请输入验证码" }, { status: 400 });
     }
 
-    const code = rawCode.trim();
+    const cleanCode = code.trim();
 
-    const attemptKey = `verify_attempts:${payload.userId}`;
+    const attemptKey = `reg_verify_attempts:${email}`;
     const attempts = parseInt((await redis.get(attemptKey)) || "0", 10);
     if (attempts >= MAX_ATTEMPTS) {
       const ttl = await redis.ttl(attemptKey);
@@ -33,7 +31,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const key = `verify_code:${payload.userId}`;
+    const key = `reg_verify:${email}`;
     const storedCode = await redis.get(key);
 
     if (!storedCode) {
@@ -43,7 +41,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (storedCode !== code) {
+    if (storedCode !== cleanCode) {
       await redis
         .multi()
         .incr(attemptKey)
@@ -56,20 +54,35 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const user = await prisma.user.findFirst({ where: { email, deletedAt: null } });
+    if (!user) {
+      return Response.json({ error: "用户不存在" }, { status: 404 });
+    }
+
+    if (user.emailVerified) {
+      await redis.del(key);
+      return Response.json({ message: "邮箱已验证，请直接登录" });
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { emailVerified: true },
+    });
+
     await prisma.auditLog.create({
       data: {
-        userId: payload.userId,
+        userId: user.id,
         action: "VERIFY_EMAIL",
-        details: "用户完成邮箱验证",
+        details: "用户通过注册验证码完成邮箱验证",
       },
     });
 
     await redis.del(key);
     await redis.del(attemptKey);
 
-    return Response.json({ message: "邮箱验证成功" });
+    return Response.json({ message: "邮箱验证成功，请登录" });
   } catch (error) {
-    console.error("邮箱验证失败:", error);
+    console.error("注册验证失败:", error);
     return Response.json(
       { error: "验证失败，请稍后重试" },
       { status: 500 }

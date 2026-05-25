@@ -62,8 +62,8 @@ export async function sendMail(options: {
 export async function sendVerificationEmail(
   to: string,
   code: string
-): Promise<void> {
-  await sendMail({
+): Promise<boolean> {
+  return await sendMail({
     to,
     subject: "NovaMind - 邮箱验证码",
     html: `
