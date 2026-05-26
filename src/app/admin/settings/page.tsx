@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import toast from "react-hot-toast";
 import {
   Save,
   RefreshCw,
@@ -9,7 +10,9 @@ import {
   Bot,
   Shield,
   Eye,
+  EyeOff,
   Wrench,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -102,6 +105,8 @@ const configGroups: ConfigGroup[] = [
     { key: "ai_api_key", label: "API 密钥", description: "AI 服务 API 密钥", type: "password" },
     { key: "ai_base_url", label: "API 地址", description: "AI 服务基础 URL", type: "base_url" },
     { key: "ai_trial_daily_limit", label: "体验版每日AI次数", description: "未激活用户每天可使用 AI 的次数（0=不限制）", type: "number" },
+    { key: "ai_analysis_daily_limit", label: "学习分析每日限额", description: "体验版用户每日学习分析（AI薄弱点识别）次数限制", type: "number" },
+    { key: "ai_note_summary_daily_limit", label: "笔记总结每日限额", description: "体验版用户每日AI笔记总结次数限制", type: "number" },
   ],
   },
   {
@@ -135,6 +140,7 @@ export default function SettingsPage() {
   const [testEmail, setTestEmail] = useState("");
   const [testEmailMsg, setTestEmailMsg] = useState("");
   const [testEmailOk, setTestEmailOk] = useState(false);
+  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     loadConfigs();
@@ -184,6 +190,7 @@ export default function SettingsPage() {
       }
       setConfigs(map);
     } catch {
+      toast.error("获取配置失败");
     } finally {
       setLoading(false);
     }
@@ -220,8 +227,17 @@ export default function SettingsPage() {
       });
       if (res.ok) {
         await loadConfigs();
+        toast.success(`已保存 ${itemsToSave.length} 项配置`);
+      } else {
+        const data = await res.json();
+        if (data.failed > 0 && data.errors) {
+          toast.error(`保存失败：${data.errors.join("；")}`);
+        } else {
+          toast.error(data.error || "保存失败");
+        }
       }
     } catch {
+      toast.error("网络错误");
     } finally {
       setSavingGroup(null);
     }
@@ -247,8 +263,17 @@ export default function SettingsPage() {
       });
       if (res.ok) {
         await loadConfigs();
+        toast.success(`已保存 ${allItems.length} 项配置`);
+      } else {
+        const data = await res.json();
+        if (data.failed > 0 && data.errors) {
+          toast.error(`保存失败：${data.errors.join("；")}`);
+        } else {
+          toast.error(data.error || "保存失败");
+        }
       }
     } catch {
+      toast.error("网络错误");
     } finally {
       setSaving(false);
     }
@@ -298,7 +323,7 @@ export default function SettingsPage() {
         <Button onClick={handleSaveAll} disabled={saving || loading}>
           {saving ? (
             <>
-              <RefreshCw className="mr-1 h-4 w-4 animate-spin" />
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               保存中...
             </>
           ) : (
@@ -345,7 +370,7 @@ export default function SettingsPage() {
                       disabled={isSaving}
                     >
                       {isSaving ? (
-                        <RefreshCw className="mr-1 h-3 w-3 animate-spin" />
+                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
                       ) : (
                         <Save className="mr-1 h-3 w-3" />
                       )}
@@ -456,10 +481,39 @@ export default function SettingsPage() {
                               currentProvider.value !== CUSTOM_PROVIDER_VALUE
                             }
                           />
-                        ) : item.type === "switch" ? null : (
+                        ) : item.type === "switch" ? null : item.type === "password" ? (
+                          <div className="relative">
+                            <Input
+                              id={item.key}
+                              type={showPasswords[item.key] ? "text" : "password"}
+                              value={getConfigValue(item.key)}
+                              onChange={(e) => setConfigValue(item.key, e.target.value)}
+                              placeholder={item.description}
+                              className="pr-10"
+                            />
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="absolute right-0 top-0 h-10 w-10"
+                              onClick={() =>
+                                setShowPasswords((prev) => ({
+                                  ...prev,
+                                  [item.key]: !prev[item.key],
+                                }))
+                              }
+                            >
+                              {showPasswords[item.key] ? (
+                                <EyeOff className="h-4 w-4" />
+                              ) : (
+                                <Eye className="h-4 w-4" />
+                              )}
+                            </Button>
+                          </div>
+                        ) : (
                           <Input
                             id={item.key}
-                            type={item.type === "password" ? "password" : item.type === "number" ? "number" : "text"}
+                            type={item.type === "number" ? "number" : "text"}
                             value={getConfigValue(item.key)}
                             onChange={(e) => setConfigValue(item.key, e.target.value)}
                             placeholder={item.description}

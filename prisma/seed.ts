@@ -167,26 +167,6 @@ async function main() {
 
   console.log(`✅ ${systemConfigs.length} 项系统配置已初始化`);
 
-  // 生成一些示例激活码
-  const sampleCodes = [];
-  for (let i = 0; i < 10; i++) {
-    const code = `NOVA-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-    sampleCodes.push({
-      code,
-      prefix: "NOVA",
-      batchId: "SEED-BATCH-001",
-      duration: 365,
-      expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-      status: "UNUSED" as const,
-    });
-  }
-
-  for (const code of sampleCodes) {
-    await prisma.activationCode.create({ data: code });
-  }
-
-  console.log(`✅ 已生成 ${sampleCodes.length} 个示例激活码`);
-
   const sampleBank = await prisma.questionBank.create({
     data: {
       title: "JavaScript 基础测试",

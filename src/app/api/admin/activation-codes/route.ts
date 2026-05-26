@@ -3,7 +3,23 @@ import crypto from "crypto";
 import { requireAdmin } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { generateActivationCodesSchema } from "@/lib/validations";
+import { batchDeleteActivationCodesSchema } from "@/lib/validations";
 import { Prisma } from "@prisma/client";
+
+const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function generateSegment(length: number): string {
+  const bytes = crypto.randomBytes(length);
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += CODE_CHARS[bytes[i] % CODE_CHARS.length];
+  }
+  return result;
+}
+
+function generateCode(): string {
+  return `${generateSegment(5)}-${generateSegment(5)}-${generateSegment(5)}-${generateSegment(5)}`;
+}
 
 export const GET = requireAdmin(async (req: NextRequest) => {
   try {
@@ -84,17 +100,19 @@ export const POST = requireAdmin(async (req: NextRequest) => {
 
     const { prefix, count, duration } = parsed.data;
     const batchId = crypto.randomUUID();
+    const expiresAt = duration > 0
+      ? new Date(Date.now() + duration * 24 * 60 * 60 * 1000)
+      : null;
 
-    const codes: { code: string; prefix: string; batchId: string; duration: number }[] = [];
+    const codes: { code: string; prefix: string; batchId: string; duration: number; expiresAt: Date | null }[] = [];
 
     for (let i = 0; i < count; i++) {
-      const uniquePart = crypto.randomUUID().replace(/-/g, "").substring(0, 12).toUpperCase();
-      const code = `${prefix}-${uniquePart}`;
       codes.push({
-        code,
+        code: generateCode(),
         prefix,
         batchId,
         duration,
+        expiresAt,
       });
     }
 
@@ -104,6 +122,7 @@ export const POST = requireAdmin(async (req: NextRequest) => {
         prefix: c.prefix,
         batchId: c.batchId,
         duration: c.duration,
+        expiresAt: c.expiresAt,
       })),
     });
 
@@ -130,5 +149,44 @@ export const POST = requireAdmin(async (req: NextRequest) => {
     }
     console.error("生成激活码失败:", error);
     return Response.json({ error: "生成激活码失败" }, { status: 500 });
+  }
+});
+
+export const DELETE = requireAdmin(async (req: NextRequest) => {
+  try {
+    const body = await req.json();
+
+    const parsed = batchDeleteActivationCodesSchema.safeParse(body);
+    if (!parsed.success) {
+      const errors = parsed.error.errors.map((e) => e.message).join("; ");
+      return Response.json({ error: errors }, { status: 400 });
+    }
+
+    const { ids } = parsed.data;
+
+    const result = await prisma.activationCode.deleteMany({
+      where: { id: { in: ids } },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: (req as any).user?.userId || null,
+        action: "DELETE_CODES",
+        details: `批量删除 ${result.count} 个激活码`,
+        ip: (req as any).clientIp || null,
+        userAgent: req.headers.get("user-agent") || null,
+      },
+    });
+
+    return Response.json({
+      message: `成功删除 ${result.count} 个激活码`,
+      deleted: result.count,
+    });
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return Response.json({ error: "请求格式错误" }, { status: 400 });
+    }
+    console.error("删除激活码失败:", error);
+    return Response.json({ error: "删除激活码失败" }, { status: 500 });
   }
 });

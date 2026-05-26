@@ -13,6 +13,7 @@ import {
   LogOut,
   ChevronDown,
   Brain,
+  Timer,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -83,6 +84,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   const navItems = [
     { href: "/dashboard", label: "首页", icon: Home },
     { href: "/questions", label: "题库", icon: BookOpen },
+    { href: "/exams", label: "模拟考试", icon: Timer },
     { href: "/profile", label: "个人中心", icon: User },
   ];
 

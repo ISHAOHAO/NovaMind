@@ -15,8 +15,17 @@ enum UserRole {
 
 enum QuestionStatus {
   PENDING
+  REVIEWING
   APPROVED
   REJECTED
+  NEEDS_REVISION
+}
+
+enum ExamStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETED
+  ABANDONED
 }
 
 enum ActivationCodeStatus {
@@ -48,10 +57,14 @@ model User {
   activationCode ActivationCode?
   sessions      UserSession[]
   uploads       QuestionBank[]        @relation("BankUploader")
+  reviewedBanks QuestionBank[]        @relation("BankReviewer")
   records       UserQuestionRecord[]
   favorites     Favorite[]
   notes         Note[]
   auditLogs     AuditLog[]
+  exams         Exam[]
+  submittedReports Report[]             @relation("ReportReporter")
+  handledReports   Report[]             @relation("ReportHandler")
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -106,48 +119,56 @@ model ActivationCode {
 }
 
 model QuestionBank {
-  id           String          @id @default(uuid())
-  title        String
-  description  String?
-  source       String          @default("")
-  category     String          @default("")
-  tags         String[]        @default([])
-  difficulty   Int             @default(1)
-  status       QuestionStatus  @default(PENDING)
-  isPublic     Boolean         @default(false)
-  uploaderId   String
-  reviewComment String?
-  reviewedById String?
-  reviewedAt   DateTime?
-  uploader     User            @relation("BankUploader", fields: [uploaderId], references: [id])
-  questions    Question[]
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
+  id               String          @id @default(uuid())
+  title            String
+  description      String?
+  source           String          @default("")
+  category         String          @default("")
+  tags             String[]        @default([])
+  difficulty       Int             @default(1)
+  status           QuestionStatus  @default(PENDING)
+  isPublic         Boolean         @default(false)
+  uploaderId       String
+  reviewComment    String?
+  reviewedById     String?
+  reviewedAt       DateTime?
+  reviewTemplateId String?
+  uploader         User            @relation("BankUploader", fields: [uploaderId], references: [id])
+  reviewer         User?           @relation("BankReviewer", fields: [reviewedById], references: [id])
+  reviewTemplate   ReviewTemplate? @relation(fields: [reviewTemplateId], references: [id])
+  questions        Question[]
+  reports          Report[]
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
 
   @@index([status])
   @@index([category])
   @@index([difficulty])
   @@index([isPublic])
   @@index([uploaderId])
+  @@index([reviewedById])
   @@index([createdAt])
+  @@index([status, createdAt])
 }
 
 model Question {
-  id          String              @id @default(uuid())
-  bankId      String
-  type        String              @default("single")
-  content     String
-  options     Json                @default("[]")
-  answer      String
-  analysis    String?
-  image       String?
-  sortOrder   Int                 @default(0)
-  bank        QuestionBank        @relation(fields: [bankId], references: [id], onDelete: Cascade)
-  records     UserQuestionRecord[]
-  favorites   Favorite[]
-  notes       Note[]
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
+  id            String              @id @default(uuid())
+  bankId        String
+  type          String              @default("single")
+  content       String
+  options       Json                @default("[]")
+  answer        String
+  analysis      String?
+  image         String?
+  sortOrder     Int                 @default(0)
+  bank          QuestionBank        @relation(fields: [bankId], references: [id], onDelete: Cascade)
+  records       UserQuestionRecord[]
+  favorites     Favorite[]
+  notes         Note[]
+  examQuestions ExamQuestion[]
+  reports       Report[]
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
 
   @@index([bankId])
   @@index([type])
@@ -170,6 +191,8 @@ model UserQuestionRecord {
   @@index([questionId])
   @@index([isCorrect])
   @@index([createdAt])
+  @@index([userId, isCorrect])
+  @@index([userId, createdAt])
 }
 
 model Favorite {
@@ -185,17 +208,21 @@ model Favorite {
 }
 
 model Note {
-  id          String    @id @default(uuid())
-  userId      String
-  questionId  String
-  content     String
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  question    Question  @relation(fields: [questionId], references: [id], onDelete: Cascade)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id            String    @id @default(uuid())
+  userId        String
+  questionId    String
+  content       String
+  importance    Int       @default(0)
+  isAiGenerated Boolean   @default(false)
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question      Question  @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   @@unique([userId, questionId])
   @@index([userId])
+  @@index([userId, importance])
+  @@index([isAiGenerated])
 }
 
 model SystemConfig {
@@ -232,4 +259,142 @@ model RateLimit {
 
   @@index([key])
   @@index([resetAt])
+}
+
+model Exam {
+  id              String       @id @default(uuid())
+  title           String
+  description     String?
+  userId          String
+  durationMinutes Int          @default(60)
+  difficulty      Int          @default(3)
+  totalQuestions  Int          @default(0)
+  correctCount    Int          @default(0)
+  score           Float        @default(0)
+  status          ExamStatus   @default(DRAFT)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  settings        Json         @default("{}")
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  questions       ExamQuestion[]
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([userId, status])
+  @@index([createdAt])
+}
+
+model ExamQuestion {
+  id          String   @id @default(uuid())
+  examId      String
+  questionId  String
+  userAnswer  String?
+  isCorrect   Boolean?
+  sortOrder   Int      @default(0)
+  exam        Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  question    Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+
+  @@index([examId])
+  @@index([questionId])
+  @@unique([examId, questionId])
+}
+
+model ReviewTemplate {
+  id          String          @id @default(uuid())
+  name        String
+  content     String
+  category    String          @default("")
+  isDefault   Boolean         @default(false)
+  createdBy   String?
+  questionBanks QuestionBank[]
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([category])
+  @@index([isDefault])
+}
+
+model ReviewerDailyStats {
+  id           String   @id @default(uuid())
+  userId       String
+  date         DateTime
+  reviewedCount Int    @default(0)
+  approvedCount Int    @default(0)
+  rejectedCount Int    @default(0)
+  needsRevisionCount Int @default(0)
+  avgReviewTime  Int   @default(0)
+  createdAt    DateTime @default(now())
+
+  @@unique([userId, date])
+  @@index([userId])
+  @@index([date])
+}
+
+model LoginAttempt {
+  id        String    @id @default(uuid())
+  userId    String?
+  email     String
+  ip        String
+  success   Boolean
+  reason    String?
+  userAgent String?
+  createdAt DateTime  @default(now())
+
+  @@index([ip])
+  @@index([userId])
+  @@index([email])
+  @@index([createdAt])
+  @@index([ip, success, createdAt])
+  @@index([success, createdAt])
+}
+
+model IpBlockRule {
+  id        String    @id @default(uuid())
+  ip        String    @unique
+  reason    String?
+  blockedAt DateTime  @default(now())
+  blockedBy String?
+  expiresAt DateTime?
+
+  @@index([ip])
+  @@index([expiresAt])
+}
+
+model AiCache {
+  id         String   @id @default(uuid())
+  promptHash String   @unique
+  prompt     String
+  response   String
+  model      String   @default("")
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+
+  @@index([promptHash])
+  @@index([expiresAt])
+}
+
+model Report {
+  id              String          @id @default(uuid())
+  reporterId      String
+  questionBankId  String
+  questionId      String?
+  reason          String
+  status          String          @default("PENDING")
+  handledById     String?
+  handledAt       DateTime?
+  handleNote      String?
+  reporter        User            @relation("ReportReporter", fields: [reporterId], references: [id])
+  questionBank    QuestionBank    @relation(fields: [questionBankId], references: [id], onDelete: Cascade)
+  question        Question?       @relation(fields: [questionId], references: [id], onDelete: SetNull)
+  handler         User?           @relation("ReportHandler", fields: [handledById], references: [id])
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([reporterId])
+  @@index([questionBankId])
+  @@index([status])
+  @@index([createdAt])
 }

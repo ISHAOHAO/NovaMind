@@ -3,13 +3,19 @@ import prisma from "@/lib/prisma";
 import { authenticateRequest } from "@/lib/auth";
 import { questionSchema } from "@/lib/validations";
 import { formatDate } from "@/lib/utils";
-import { invalidatePattern } from "@/lib/redis";
+import { invalidatePattern, getFromCache, setToCache } from "@/lib/redis";
 
 type RouteContext = { params: Promise<{ bankId: string }> };
 
 export async function GET(req: NextRequest, context: RouteContext) {
   try {
     const { bankId } = await context.params;
+
+    const cacheKey = `questions:detail:${bankId}:questions`;
+    const cached = await getFromCache<any>(cacheKey);
+    if (cached) {
+      return Response.json(cached);
+    }
 
     const bank = await prisma.questionBank.findUnique({ where: { id: bankId } });
     if (!bank) {
@@ -40,10 +46,14 @@ export async function GET(req: NextRequest, context: RouteContext) {
       updatedAt: formatDate(q.updatedAt),
     }));
 
-    return Response.json({
+    const response = {
       data: result,
       total: result.length,
-    });
+    };
+
+    await setToCache(cacheKey, response, 120);
+
+    return Response.json(response);
   } catch (error: any) {
     console.error("获取题目列表失败:", error);
     return Response.json({ error: "获取题目列表失败，请稍后重试" }, { status: 500 });

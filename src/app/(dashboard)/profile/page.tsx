@@ -221,9 +221,9 @@ export default function ProfilePage() {
   }
 
   const initials = user?.name?.charAt(0)?.toUpperCase() || "U";
-  const trialMinutes = 60;
-  const usedMinutes = Math.floor((user?.todayUsedSeconds || 0) / 60);
-  const remainingMinutes = Math.max(0, trialMinutes - usedMinutes);
+  const todayUsedSeconds = user?.todayUsedSeconds ?? 0;
+  const usedMinutes = Math.floor(todayUsedSeconds / 60);
+  const usedSeconds = todayUsedSeconds % 60;
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -403,28 +403,44 @@ export default function ProfilePage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center justify-between rounded-md bg-muted/50 p-4">
-                <div>
+                <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">今日使用时长</p>
-                  <p className="text-2xl font-bold">{usedMinutes} 分钟</p>
+                  <p className="text-2xl font-bold truncate">
+                    {usedMinutes > 0 || usedSeconds > 0
+                      ? `${usedMinutes} 分 ${usedSeconds} 秒`
+                      : "0 分钟"}
+                  </p>
                 </div>
-                <Clock className="h-8 w-8 text-muted-foreground" />
+                <Clock className="ml-3 h-8 w-8 shrink-0 text-muted-foreground" />
               </div>
               <Separator />
-              <div className="flex items-center justify-between rounded-md bg-muted/50 p-4">
-                <div>
-                  <p className="text-sm font-medium">剩余试用时长</p>
-                  <p className="text-2xl font-bold">{remainingMinutes} 分钟</p>
+              {user?.isActivated ? (
+                <div className="flex items-center justify-between rounded-md bg-primary/5 p-4">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium">使用权限</p>
+                    <p className="text-2xl font-bold text-primary truncate">无限使用</p>
+                  </div>
+                  <Shield className="ml-3 h-8 w-8 shrink-0 text-primary" />
                 </div>
-                <Clock className="h-8 w-8 text-muted-foreground" />
-              </div>
-              <Separator />
-              <div className="flex items-center justify-between rounded-md bg-muted/50 p-4">
-                <div>
-                  <p className="text-sm font-medium">总试用时长</p>
-                  <p className="text-2xl font-bold">{trialMinutes} 分钟</p>
-                </div>
-                <Clock className="h-8 w-8 text-muted-foreground" />
-              </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between rounded-md bg-muted/50 p-4">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium whitespace-nowrap">试用状态</p>
+                      <p className="text-2xl font-bold truncate text-orange-600">
+                        试用中
+                      </p>
+                    </div>
+                    <Clock className="ml-3 h-8 w-8 shrink-0 text-muted-foreground" />
+                  </div>
+                  <Separator />
+                  <div className="rounded-md bg-muted/30 p-4 text-center">
+                    <p className="text-sm text-muted-foreground">
+                      激活账号后即可无限使用全部功能
+                    </p>
+                  </div>
+                </>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

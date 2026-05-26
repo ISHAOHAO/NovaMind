@@ -3,13 +3,19 @@ import prisma from "@/lib/prisma";
 import { authenticateRequest } from "@/lib/auth";
 import { questionBankSchema } from "@/lib/validations";
 import { formatDate, getDifficultyLabel } from "@/lib/utils";
-import { invalidatePattern } from "@/lib/redis";
+import { invalidatePattern, getFromCache, setToCache, deleteFromCache } from "@/lib/redis";
 
 type RouteContext = { params: Promise<{ bankId: string }> };
 
 export async function GET(req: NextRequest, context: RouteContext) {
   try {
     const { bankId } = await context.params;
+
+    const cacheKey = `questions:bank:${bankId}`;
+    const cached = await getFromCache<any>(cacheKey);
+    if (cached) {
+      return Response.json(cached);
+    }
 
     const user = await authenticateRequest(req);
 
@@ -48,24 +54,28 @@ export async function GET(req: NextRequest, context: RouteContext) {
     }
 
     const result = {
-      id: bank.id,
-      title: bank.title,
-      description: bank.description,
-      source: bank.source,
-      category: bank.category,
-      tags: bank.tags,
-      difficulty: bank.difficulty,
-      difficultyLabel: getDifficultyLabel(bank.difficulty),
-      status: bank.status,
-      isPublic: bank.isPublic,
-      uploader: bank.uploader,
-      questions: bank.questions,
-      questionCount: bank.questions.length,
-      createdAt: formatDate(bank.createdAt),
-      updatedAt: formatDate(bank.updatedAt),
+      data: {
+        id: bank.id,
+        title: bank.title,
+        description: bank.description,
+        source: bank.source,
+        category: bank.category,
+        tags: bank.tags,
+        difficulty: bank.difficulty,
+        difficultyLabel: getDifficultyLabel(bank.difficulty),
+        status: bank.status,
+        isPublic: bank.isPublic,
+        uploader: bank.uploader,
+        questions: bank.questions,
+        questionCount: bank.questions.length,
+        createdAt: formatDate(bank.createdAt),
+        updatedAt: formatDate(bank.updatedAt),
+      },
     };
 
-    return Response.json({ data: result });
+    await setToCache(cacheKey, result, 300);
+
+    return Response.json(result);
   } catch (error: any) {
     console.error("获取题库详情失败:", error);
     return Response.json({ error: "获取题库详情失败，请稍后重试" }, { status: 500 });
@@ -123,6 +133,7 @@ export async function PUT(req: NextRequest, context: RouteContext) {
       },
     });
 
+    await deleteFromCache(`questions:bank:${bankId}`);
     await invalidatePattern(`questions:*:${bankId}:*`);
 
     return Response.json({
@@ -169,6 +180,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
       },
     });
 
+    await deleteFromCache(`questions:bank:${bankId}`);
     await invalidatePattern(`questions:*:${bankId}:*`);
     await invalidatePattern("questions:list:*");
 

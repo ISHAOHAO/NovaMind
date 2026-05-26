@@ -70,6 +70,10 @@ export const generateActivationCodesSchema = z.object({
   duration: z.number().min(1),
 });
 
+export const batchDeleteActivationCodesSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(500),
+});
+
 export const systemConfigSchema = z.object({
   key: z.string().min(1),
   value: z.string(),

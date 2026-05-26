@@ -1,8 +1,15 @@
 import { NextRequest } from "next/server";
 import prisma from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
+import { getFromCache, setToCache } from "@/lib/redis";
 
 export const GET = requireAdmin(async (_req: NextRequest) => {
+  const cachedStats = await getFromCache<any>("admin:dashboard:stats");
+  const cachedCharts = await getFromCache<any>("admin:dashboard:charts");
+  if (cachedStats && cachedCharts) {
+    return Response.json({ ...cachedStats, ...cachedCharts });
+  }
+
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -67,16 +74,20 @@ export const GET = requireAdmin(async (_req: NextRequest) => {
         user: { select: { name: true, email: true } },
       },
     }),
-    prisma.user.groupBy({
-      by: ["createdAt"],
-      where: { createdAt: { gte: weekAgo }, deletedAt: null },
-      _count: { id: true },
-    }),
-    prisma.userQuestionRecord.groupBy({
-      by: ["createdAt"],
-      where: { createdAt: { gte: weekAgo } },
-      _count: { id: true },
-    }),
+    prisma.$queryRaw<{ date: Date; count: bigint }[]>`
+      SELECT DATE("createdAt") as date, COUNT(*)::int as count
+      FROM "User"
+      WHERE "createdAt" >= ${weekAgo} AND "deletedAt" IS NULL
+      GROUP BY DATE("createdAt")
+      ORDER BY date ASC
+    `,
+    prisma.$queryRaw<{ date: Date; count: bigint }[]>`
+      SELECT DATE("createdAt") as date, COUNT(*)::int as count
+      FROM "UserQuestionRecord"
+      WHERE "createdAt" >= ${weekAgo}
+      GROUP BY DATE("createdAt")
+      ORDER BY date ASC
+    `,
     prisma.user.groupBy({
       by: ["role"],
       where: { deletedAt: null },
@@ -91,7 +102,7 @@ export const GET = requireAdmin(async (_req: NextRequest) => {
 
   const unusedCount = totalActivationCodes - usedActivationCodes;
 
-  return Response.json({
+  const stats = {
     totalUsers,
     activeUsers,
     bannedUsers,
@@ -105,22 +116,32 @@ export const GET = requireAdmin(async (_req: NextRequest) => {
     todayRecords,
     recentUsers,
     recentLogs,
-    weeklyRegistrations: weeklyRegistrations.map((r) => ({
-      date: r.createdAt.toISOString().split("T")[0],
-      count: r._count.id,
+    activationUsage: totalActivationCodes > 0
+      ? Math.round((usedActivationCodes / totalActivationCodes) * 100)
+      : 0,
+    unusedActivationCodes: unusedCount,
+  };
+
+  const charts = {
+    weeklyRegistrations: weeklyRegistrations.map((r: any) => ({
+      date: r.date instanceof Date ? r.date.toISOString().split("T")[0] : String(r.date).split("T")[0],
+      count: Number(r.count),
     })),
-    dailyRecords: dailyRecords.map((r) => ({
-      date: r.createdAt.toISOString().split("T")[0],
-      count: r._count.id,
+    dailyRecords: dailyRecords.map((r: any) => ({
+      date: r.date instanceof Date ? r.date.toISOString().split("T")[0] : String(r.date).split("T")[0],
+      count: Number(r.count),
     })),
     roleDistribution: {
       USER: roleMap["USER"] ?? 0,
       ADMIN: roleMap["ADMIN"] ?? 0,
       SUPER_ADMIN: roleMap["SUPER_ADMIN"] ?? 0,
     },
-    activationUsage: totalActivationCodes > 0
-      ? Math.round((usedActivationCodes / totalActivationCodes) * 100)
-      : 0,
-    unusedActivationCodes: unusedCount,
-  });
+  };
+
+  await Promise.all([
+    setToCache("admin:dashboard:stats", stats, 60),
+    setToCache("admin:dashboard:charts", charts, 60),
+  ]);
+
+  return Response.json({ ...stats, ...charts });
 });

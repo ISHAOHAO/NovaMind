@@ -26,6 +26,8 @@ export async function GET(req: NextRequest) {
         bannedReason: true,
         lastLoginAt: true,
         lastLoginIp: true,
+        todayUsedSeconds: true,
+        lastUsedDate: true,
         createdAt: true,
         updatedAt: true,
       },

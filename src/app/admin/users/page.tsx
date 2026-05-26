@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   Search,
   Ban,
@@ -60,6 +60,7 @@ import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { formatDate } from "@/lib/utils";
 import toast from "react-hot-toast";
+import { handleApiError, getToken } from "@/lib/api-client";
 
 interface User {
   id: string;
@@ -129,6 +130,8 @@ export default function UsersPage() {
   const [roleFilter, setRoleFilter] = useState("all");
   const [bannedFilter, setBannedFilter] = useState("all");
   const [emailVerifiedFilter, setEmailVerifiedFilter] = useState("all");
+  const [activationFilter, setActivationFilter] = useState("all");
+  const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const [detailUser, setDetailUser] = useState<UserDetail | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -157,30 +160,36 @@ export default function UsersPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createLoading, setCreateLoading] = useState(false);
 
-  const fetchUsers = useCallback(async (page: number) => {
+  const fetchUsers = useCallback(async (page: number, searchVal?: string, roleVal?: string, banVal?: string, emailVal?: string, activationVal?: string) => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
       params.set("page", String(page));
       params.set("limit", "20");
-      if (search) params.set("search", search);
-      if (roleFilter !== "all") params.set("role", roleFilter);
-      if (bannedFilter !== "all") params.set("banned", bannedFilter);
-      if (emailVerifiedFilter !== "all") params.set("emailVerified", emailVerifiedFilter);
+      const s = searchVal ?? search;
+      const r = roleVal ?? roleFilter;
+      const b = banVal ?? bannedFilter;
+      const e = emailVal ?? emailVerifiedFilter;
+      const a = activationVal ?? activationFilter;
+      if (s) params.set("search", s);
+      if (r !== "all") params.set("role", r);
+      if (b !== "all") params.set("banned", b);
+      if (e !== "all") params.set("emailVerified", e);
+      if (a !== "all") params.set("isActivated", a);
 
-      const token = localStorage.getItem("novamind_token");
+      const token = getToken();
       const res = await fetch(`/api/admin/users?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
       setUsers(data.users || []);
       setPagination(data.pagination || { page: 1, limit: 20, total: 0, totalPages: 0 });
-    } catch {
-      toast.error("获取用户列表失败");
+    } catch (err) {
+      handleApiError(err, "获取用户列表失败");
     } finally {
       setLoading(false);
     }
-  }, [search, roleFilter, bannedFilter, emailVerifiedFilter]);
+  }, [search, roleFilter, bannedFilter, emailVerifiedFilter, activationFilter]);
 
   useEffect(() => {
     fetchUsers(1);
@@ -190,8 +199,18 @@ export default function UsersPage() {
         const parsed = JSON.parse(userStr);
         setCurrentUserRole(parsed.role || "");
       }
-    } catch {}
+    } catch {
+      setCurrentUserRole("");
+    }
   }, [fetchUsers]);
+
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      fetchUsers(1, value, roleFilter, bannedFilter, emailVerifiedFilter, activationFilter);
+    }, 300);
+  };
 
   const handleViewDetail = async (userId: string) => {
     setDetailLoading(true);
@@ -400,7 +419,7 @@ export default function UsersPage() {
                 placeholder="搜索用户名/邮箱/昵称..."
                 className="pl-9"
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => handleSearchChange(e.target.value)}
               />
             </div>
             <Select value={roleFilter} onValueChange={setRoleFilter}>
@@ -434,6 +453,16 @@ export default function UsersPage() {
                 <SelectItem value="false">未验证</SelectItem>
               </SelectContent>
             </Select>
+            <Select value={activationFilter} onValueChange={setActivationFilter}>
+              <SelectTrigger className="w-[130px]">
+                <SelectValue placeholder="激活状态" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部</SelectItem>
+                <SelectItem value="true">已激活</SelectItem>
+                <SelectItem value="false">未激活</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           {loading ? (
@@ -452,6 +481,7 @@ export default function UsersPage() {
                     <TableHead>角色</TableHead>
                     <TableHead>激活</TableHead>
                     <TableHead>邮箱验证</TableHead>
+                    <TableHead>最后登录</TableHead>
                     <TableHead>状态</TableHead>
                     <TableHead>注册时间</TableHead>
                     <TableHead className="text-right">操作</TableHead>
@@ -460,7 +490,7 @@ export default function UsersPage() {
                 <TableBody>
                   {users.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={8} className="text-center text-muted-foreground">
+                      <TableCell colSpan={9} className="text-center text-muted-foreground">
                         暂无用户数据
                       </TableCell>
                     </TableRow>
@@ -501,6 +531,9 @@ export default function UsersPage() {
                           ) : (
                             <Badge variant="outline" className="text-muted-foreground text-xs">未验证</Badge>
                           )}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {user.lastLoginAt ? formatDate(user.lastLoginAt) : "从未登录"}
                         </TableCell>
                         <TableCell>
                           {user.banned ? (

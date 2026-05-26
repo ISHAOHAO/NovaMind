@@ -119,3 +119,181 @@ export async function getUploadAnalyzeRemaining(userId: string): Promise<{
   );
   return { used, limit, remaining: Math.max(0, limit - used) };
 }
+
+export async function checkAndIncrementAiUsage(userId: string): Promise<{
+  allowed: boolean;
+  used: number;
+  limit: number;
+  message?: string;
+}> {
+  const limit = parseInt(
+    await getSystemConfig("ai_trial_daily_limit", "20"),
+    10
+  );
+
+  const key = getUsageKey(userId);
+
+  const luaScript = `
+    local current = redis.call('GET', KEYS[1])
+    current = tonumber(current) or 0
+    local limit = tonumber(ARGV[1])
+    if current >= limit then
+      return {0, current, limit}
+    end
+    local new = redis.call('INCR', KEYS[1])
+    local expireAt = tonumber(ARGV[2])
+    redis.call('EXPIREAT', KEYS[1], expireAt)
+    return {1, new, limit}
+  `;
+
+  const now = new Date();
+  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const expireAt = Math.ceil(endOfDay.getTime() / 1000);
+
+  const result = await redis.eval(
+    luaScript,
+    1,
+    key,
+    limit.toString(),
+    expireAt.toString()
+  ) as [number, number, number];
+
+  const allowed = result[0] === 1;
+  const used = result[1];
+  const actualLimit = result[2];
+
+  if (!allowed) {
+    return {
+      allowed: false,
+      used,
+      limit: actualLimit,
+      message: `当日 AI 使用次数已达上限 (${used}/${actualLimit})，请激活完整版或明天再试`,
+    };
+  }
+
+  return { allowed: true, used, limit: actualLimit };
+}
+
+// ============================================================
+// Learning Analysis (weak-points) daily limit
+// ============================================================
+function getAnalysisKey(userId: string): string {
+  const today = new Date().toISOString().slice(0, 10);
+  return `ai_analysis:${userId}:${today}`;
+}
+
+export async function checkAndIncrementAnalysisLimit(userId: string): Promise<{
+  allowed: boolean;
+  used: number;
+  limit: number;
+  message?: string;
+}> {
+  const limit = parseInt(
+    await getSystemConfig("ai_analysis_daily_limit", "5"),
+    10
+  );
+
+  const key = getAnalysisKey(userId);
+
+  const luaScript = `
+    local current = redis.call('GET', KEYS[1])
+    current = tonumber(current) or 0
+    local limit = tonumber(ARGV[1])
+    if current >= limit then
+      return {0, current, limit}
+    end
+    local new = redis.call('INCR', KEYS[1])
+    local expireAt = tonumber(ARGV[2])
+    redis.call('EXPIREAT', KEYS[1], expireAt)
+    return {1, new, limit}
+  `;
+
+  const now = new Date();
+  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const expireAt = Math.ceil(endOfDay.getTime() / 1000);
+
+  const result = await redis.eval(
+    luaScript,
+    1,
+    key,
+    limit.toString(),
+    expireAt.toString()
+  ) as [number, number, number];
+
+  const allowed = result[0] === 1;
+  const used = result[1];
+  const actualLimit = result[2];
+
+  if (!allowed) {
+    return {
+      allowed: false,
+      used,
+      limit: actualLimit,
+      message: `当日学习分析次数已达上限 (${used}/${actualLimit})，请激活完整版或明天再试`,
+    };
+  }
+
+  return { allowed: true, used, limit: actualLimit };
+}
+
+// ============================================================
+// Note AI Summary daily limit
+// ============================================================
+function getNoteSummaryKey(userId: string): string {
+  const today = new Date().toISOString().slice(0, 10);
+  return `ai_note_summary:${userId}:${today}`;
+}
+
+export async function checkAndIncrementNoteSummaryLimit(userId: string): Promise<{
+  allowed: boolean;
+  used: number;
+  limit: number;
+  message?: string;
+}> {
+  const limit = parseInt(
+    await getSystemConfig("ai_note_summary_daily_limit", "5"),
+    10
+  );
+
+  const key = getNoteSummaryKey(userId);
+
+  const luaScript = `
+    local current = redis.call('GET', KEYS[1])
+    current = tonumber(current) or 0
+    local limit = tonumber(ARGV[1])
+    if current >= limit then
+      return {0, current, limit}
+    end
+    local new = redis.call('INCR', KEYS[1])
+    local expireAt = tonumber(ARGV[2])
+    redis.call('EXPIREAT', KEYS[1], expireAt)
+    return {1, new, limit}
+  `;
+
+  const now = new Date();
+  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const expireAt = Math.ceil(endOfDay.getTime() / 1000);
+
+  const result = await redis.eval(
+    luaScript,
+    1,
+    key,
+    limit.toString(),
+    expireAt.toString()
+  ) as [number, number, number];
+
+  const allowed = result[0] === 1;
+  const used = result[1];
+  const actualLimit = result[2];
+
+  if (!allowed) {
+    return {
+      allowed: false,
+      used,
+      limit: actualLimit,
+      message: `当日笔记AI总结次数已达上限 (${used}/${actualLimit})，请激活完整版或明天再试`,
+    };
+  }
+
+  return { allowed: true, used, limit: actualLimit };
+}

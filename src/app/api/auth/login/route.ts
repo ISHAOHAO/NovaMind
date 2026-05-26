@@ -3,10 +3,27 @@ import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
 import prisma from "@/lib/prisma";
 import { signToken } from "@/lib/auth";
-import { rateLimit } from "@/lib/rate-limit";
+import { rateLimit, checkBlacklist } from "@/lib/rate-limit";
 import { getClientIp, getDeviceFingerprint, getUserAgent } from "@/lib/device";
 import { getSystemConfig } from "@/lib/config";
 import { loginSchema } from "@/lib/validations";
+
+async function recordLoginAttempt(
+  email: string,
+  ip: string,
+  success: boolean,
+  reason: string | null,
+  userId: string | null,
+  userAgent: string | null
+) {
+  try {
+    await prisma.loginAttempt.create({
+      data: { email, ip, success, reason, userId, userAgent },
+    });
+  } catch {
+    // silently ignore recording failures
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -22,6 +39,32 @@ export async function POST(req: NextRequest) {
     const { account, password } = validation.data;
 
     const ip = getClientIp(req);
+    const userAgent = getUserAgent(req);
+
+    const isBlocked = await checkBlacklist(ip);
+    if (isBlocked) {
+      return Response.json(
+        { error: "您的IP已被限制登录，如有疑问请联系管理员" },
+        { status: 403 }
+      );
+    }
+
+    const dbBlocked = await prisma.ipBlockRule.findFirst({
+      where: {
+        ip,
+        OR: [
+          { expiresAt: null },
+          { expiresAt: { gte: new Date() } },
+        ],
+      },
+    });
+    if (dbBlocked) {
+      return Response.json(
+        { error: "您的IP已被限制登录，如有疑问请联系管理员" },
+        { status: 403 }
+      );
+    }
+
     const { allowed } = await rateLimit(`login:${ip}`, {
       maxRequests: 10,
       windowMs: 900000,
@@ -39,10 +82,12 @@ export async function POST(req: NextRequest) {
       : await prisma.user.findUnique({ where: { username: account } });
 
     if (!user) {
+      await recordLoginAttempt(account, ip, false, "用户名或密码错误", null, userAgent);
       return Response.json({ error: "用户名或密码错误" }, { status: 401 });
     }
 
     if (user.banned) {
+      await recordLoginAttempt(account, ip, false, `账号已被封禁${user.bannedReason ? `：${user.bannedReason}` : ""}`, user.id, userAgent);
       return Response.json(
         { error: `账号已被封禁${user.bannedReason ? `：${user.bannedReason}` : ""}` },
         { status: 403 }
@@ -50,6 +95,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (user.deletedAt) {
+      await recordLoginAttempt(account, ip, false, "账号已注销", user.id, userAgent);
       return Response.json({ error: "该账号已注销" }, { status: 403 });
     }
 
@@ -58,6 +104,7 @@ export async function POST(req: NextRequest) {
       "false"
     );
     if (emailVerificationRequired === "true" && !user.emailVerified) {
+      await recordLoginAttempt(account, ip, false, "邮箱未验证", user.id, userAgent);
       return Response.json(
         { error: "请先验证邮箱后再登录", needVerify: true, email: user.email },
         { status: 403 }
@@ -66,6 +113,7 @@ export async function POST(req: NextRequest) {
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
+      await recordLoginAttempt(account, ip, false, "密码错误", user.id, userAgent);
       return Response.json({ error: "用户名或密码错误" }, { status: 401 });
     }
 
@@ -81,7 +129,6 @@ export async function POST(req: NextRequest) {
     }
 
     const deviceId = getDeviceFingerprint(req);
-    const userAgent = getUserAgent(req);
 
     const session = await prisma.userSession.create({
       data: {
@@ -124,6 +171,8 @@ export async function POST(req: NextRequest) {
         userAgent,
       },
     });
+
+    await recordLoginAttempt(user.email, ip, true, null, user.id, userAgent);
 
     return Response.json({
       message: "登录成功",

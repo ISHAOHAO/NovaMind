@@ -10,7 +10,7 @@ export const redis = globalForRedis.redis || new Redis(REDIS_URL, {
     return Math.min(times * 200, 2000);
   },
   maxRetriesPerRequest: 3,
-  enableOfflineQueue: true,
+  enableOfflineQueue: false,
   lazyConnect: false,
 });
 
@@ -62,9 +62,25 @@ export async function deleteFromCache(key: string): Promise<void> {
 
 export async function invalidatePattern(pattern: string): Promise<void> {
   try {
-    const keys = await redis.keys(pattern);
-    if (keys.length > 0) {
-      await redis.del(...keys);
+    let cursor = "0";
+    const keysToDelete: string[] = [];
+    do {
+      const [nextCursor, keys] = await redis.scan(
+        cursor,
+        "MATCH",
+        pattern,
+        "COUNT",
+        100
+      );
+      cursor = nextCursor;
+      keysToDelete.push(...keys);
+    } while (cursor !== "0");
+
+    if (keysToDelete.length > 0) {
+      const batchSize = 100;
+      for (let i = 0; i < keysToDelete.length; i += batchSize) {
+        await redis.del(...keysToDelete.slice(i, i + batchSize));
+      }
     }
   } catch (err) {
     console.error("Cache invalidate error:", err);

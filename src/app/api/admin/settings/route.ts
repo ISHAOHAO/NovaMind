@@ -1,9 +1,16 @@
 import { NextRequest } from "next/server";
 import { requireAdmin, TokenPayload } from "@/lib/auth";
 import prisma from "@/lib/prisma";
+import { getFromCache, setToCache, deleteFromCache } from "@/lib/redis";
 
 export const GET = requireAdmin(async (_req: NextRequest) => {
   try {
+    const cacheKey = "admin:settings";
+    const cached = await getFromCache<any>(cacheKey);
+    if (cached) {
+      return Response.json(cached);
+    }
+
     const configs = await prisma.systemConfig.findMany({
       orderBy: { key: "asc" },
       select: {
@@ -15,7 +22,10 @@ export const GET = requireAdmin(async (_req: NextRequest) => {
       },
     });
 
-    return Response.json({ configs });
+    const data = { configs };
+    await setToCache(cacheKey, data, 300);
+
+    return Response.json(data);
   } catch (error) {
     console.error("获取系统配置失败:", error);
     return Response.json({ error: "获取系统配置失败" }, { status: 500 });
@@ -61,6 +71,8 @@ export const PUT = requireAdmin(async (req: NextRequest) => {
         userAgent: req.headers.get("user-agent") || null,
       },
     });
+
+    deleteFromCache("admin:settings").catch(() => {});
 
     return Response.json({
       message: `成功更新 ${results.length} 项配置`,

@@ -119,32 +119,62 @@ async function parseExcelXlsx(buffer: Buffer) {
       ? String(row[colMap.type] || "single").trim()
       : "single";
 
+    // Map Chinese type labels to English values
+    const typeLabelMap: Record<string, string> = {
+      "单选题": "single", "单选": "single",
+      "多选题": "multiple", "多选": "multiple",
+      "判断题": "truefalse", "判断": "truefalse",
+      "填空题": "fillblank", "填空": "fillblank",
+      "完形填空": "cloze", "cloze": "cloze",
+    };
+    const mappedType = typeLabelMap[type] || type;
+
     const answer = String(row[colMap.answer] || "").trim();
     const analysis = colMap.analysis !== undefined
       ? String(row[colMap.analysis] || "").trim()
       : "";
 
     let options: { key: string; value: string }[] = [];
+    const typeLower = mappedType.toLowerCase();
     if (colMap.options !== undefined && row[colMap.options]) {
       const raw = String(row[colMap.options]).trim();
-      const parts = raw.split(/[;；|｜\n]+/).filter(Boolean);
-      if (parts.length >= 2) {
-        options = parts.map((part) => {
-          const match = part.match(/^([A-E])[.、:：]\s*(.+)/);
+
+      if (typeLower === "cloze" || type === "完形填空") {
+        // Cloze: split by semicolons first to get each blank, then preserve
+        // pipe-separated choices within each blank
+        const blankParts = raw.split(/[;；\n]+/).filter(Boolean);
+        options = blankParts.map((part) => {
+          const match = part.trim().match(/^(\d+)\s*[.、]\s*(.+)$/);
           if (match) {
             return { key: match[1], value: match[2].trim() };
           }
-          return { key: String.fromCharCode(65 + parts.indexOf(part)), value: part.trim() };
+          return { key: String(blankParts.indexOf(part) + 1), value: part.trim() };
         });
+      } else {
+        // Regular options: split by common separators
+        const parts = raw.split(/[;；\n]+/).filter(Boolean);
+        if (parts.length >= 2) {
+          options = parts.map((part) => {
+            const match = part.trim().match(/^([A-E])[.、:：]\s*(.+)/);
+            if (match) {
+              return { key: match[1], value: match[2].trim() };
+            }
+            return { key: String.fromCharCode(65 + parts.indexOf(part)), value: part.trim() };
+          });
+        }
       }
     }
+
+    // Determine actual type with all info available
+    const detectedType = detectQuestionType(content, options, answer);
+    const finalType = VALID_TYPES.includes(typeLower) ? typeLower : detectedType;
 
     const image = colMap.image !== undefined
       ? String(row[colMap.image] || "").trim() || undefined
       : undefined;
 
     questions.push({
-      type: VALID_TYPES.includes(type) ? type : "single",
+      type: finalType,
       content,
       options,
       answer,
@@ -155,6 +185,68 @@ async function parseExcelXlsx(buffer: Buffer) {
   }
 
   return questions;
+}
+
+// ============================================================
+// 3.5 Fallback text extractor for old binary .doc files
+// ============================================================
+function extractTextFromDocBinary(buffer: Buffer): string {
+  // Old .doc (OLE2) files store text in the WordDocument stream.
+  // While we can't fully parse OLE2 without a library, much of the
+  // text content is stored as UTF-16LE or appears as readable ASCII
+  // sequences within the binary. We try several strategies:
+
+  let text = "";
+
+  // Strategy 1: Try extracting UTF-16LE text runs (common in .doc)
+  // Look for sequences of valid UTF-16LE characters
+  const utf16Parts: string[] = [];
+  let runStart = -1;
+  for (let i = 0; i < buffer.length - 1; i += 2) {
+    const code = buffer.readUInt16LE(i);
+    // Valid printable CJK or ASCII range
+    if (
+      (code >= 0x20 && code <= 0x7E) || // ASCII printable
+      (code >= 0x4E00 && code <= 0x9FFF) || // CJK Unified
+      (code >= 0x3000 && code <= 0x303F) || // CJK punctuation
+      (code >= 0xFF00 && code <= 0xFFEF) || // Halfwidth/Fullwidth
+      (code >= 0x2000 && code <= 0x206F) || // General punctuation
+      code === 0x0D || code === 0x0A // CR/LF
+    ) {
+      if (runStart === -1) runStart = i;
+    } else {
+      if (runStart !== -1 && i - runStart >= 4) {
+        utf16Parts.push(buffer.slice(runStart, i).toString("utf16le"));
+      }
+      runStart = -1;
+    }
+  }
+  if (runStart !== -1 && buffer.length - runStart >= 4) {
+    utf16Parts.push(buffer.slice(runStart).toString("utf16le"));
+  }
+
+  if (utf16Parts.length > 0) {
+    text = utf16Parts.join("\n");
+  }
+
+  // Strategy 2: Fallback — extract ASCII runs as latin1
+  if (text.length < 20) {
+    const latin1 = buffer.toString("latin1");
+    // Filter to printable lines
+    const lines = latin1.split(/[\r\n]+/).filter((line) => {
+      const cleaned = line.replace(/[^\x20-\x7E\u4E00-\u9FFF\u3000-\u303F\uFF00-\uFFEF]/g, "");
+      return cleaned.length >= 10;
+    });
+    text = lines.join("\n");
+  }
+
+  // Clean up
+  text = text
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "") // remove control chars except \t\n\r
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return text;
 }
 
 // ============================================================
@@ -236,6 +328,7 @@ function splitIntoBlocks(text: string): string[] {
 
 // Line-level extraction patterns
 const OPTION_LINE = /^([A-E])[.、:：)）]\s*(.+)$/;
+const CLOZE_BLANK_LINE = /^(\d+)\s*[.、]\s*([A-D]\.\s*.+)$/;
 const ANSWER_LINE = /^(?:正确答案|答案|Answer)[:：是为]?\s*(.+)$/i;
 const ANALYSIS_LINE = /^(?:解析|分析|答案解析|Analysis)[:：]?\s*(.+)$/i;
 const IMAGE_MARKER = /\[IMG_(\d+)\]/g;
@@ -300,6 +393,14 @@ function parseSingleBlock(block: string, imageData?: string[]): any | null {
       continue;
     }
 
+    // 5b) Check for cloze blank lines (e.g. "1. A. xxx|B. yyy")
+    const clozeMatch = line.match(CLOZE_BLANK_LINE);
+    if (clozeMatch) {
+      options.push({ key: clozeMatch[1], value: clozeMatch[2].trim() });
+      pastOptions = true;
+      continue;
+    }
+
     // 6) If we're past options but haven't found answer, check inline
     if (pastOptions && !foundAnswer) {
       const inlineAns = line.match(/答案[:：]\s*(.+)/);
@@ -323,7 +424,7 @@ function parseSingleBlock(block: string, imageData?: string[]): any | null {
     } else if (!pastAnswer) {
       // Past options but not yet at answer — could be content or stray lines
       // Check if it looks like an option prefix
-      if (line.match(/^[A-E][.、:：)]/) || line.match(/^答案/) || line.match(/^解析/)) {
+      if (line.match(/^[A-E][.、:：)]/) || line.match(/^\d+[.、]/) || line.match(/^答案/) || line.match(/^解析/)) {
         // Retry matching
         const retryAns = line.match(ANSWER_LINE);
         if (retryAns) { answer = retryAns[1].trim(); foundAnswer = true; pastAnswer = true; continue; }
@@ -331,6 +432,8 @@ function parseSingleBlock(block: string, imageData?: string[]): any | null {
         if (retryAna) { analysis = retryAna[1].trim(); foundAnalysis = true; continue; }
         const retryOpt = line.match(OPTION_LINE);
         if (retryOpt) { options.push({ key: retryOpt[1], value: retryOpt[2].trim() }); continue; }
+        const retryCloze = line.match(CLOZE_BLANK_LINE);
+        if (retryCloze) { options.push({ key: retryCloze[1], value: retryCloze[2].trim() }); continue; }
       }
       contentLines.push(line);
     }
@@ -382,7 +485,8 @@ function detectQuestionType(
 ): string {
   const lowerAns = answer.toLowerCase().trim();
 
-  // Check if it's true/false
+  // Check if it's true/false (must check before cloze/fillblank since
+  // true/false answers are very specific)
   const trueValues = ["对", "正确", "true", "t", "是", "yes", "y", "√", "✓", "✔"];
   const falseValues = ["错", "错误", "false", "f", "否", "no", "n", "×", "✗", "✘"];
   if (
@@ -390,6 +494,22 @@ function detectQuestionType(
     falseValues.includes(lowerAns)
   ) {
     return "truefalse";
+  }
+
+  // Check for cloze — content has numbered blanks like __1__, __2__
+  if (/__\d+__/.test(content) || /___\d+___/.test(content)) {
+    return "cloze";
+  }
+
+  // Also detect cloze from options: if options keys are numbers (1, 2, 3...)
+  // and values contain pipe-separated A/B/C/D choices
+  const validOptions = options.filter((o) => o.value.trim());
+  if (validOptions.length >= 1) {
+    const hasNumberedKeys = validOptions.every((o) => /^\d+$/.test(o.key));
+    const hasPipeSeparatedChoices = validOptions.some((o) => /[A-D]\.\s*.+[|｜][A-D]\.\s*.+/.test(o.value));
+    if (hasNumberedKeys && hasPipeSeparatedChoices) {
+      return "cloze";
+    }
   }
 
   // Check for fill-in-blank
@@ -405,7 +525,6 @@ function detectQuestionType(
   }
 
   // Has options — check for multiple choice
-  const validOptions = options.filter((o) => o.value.trim());
   if (validOptions.length >= 2) {
     // If answer contains commas or multiple letters, it's likely multiple
     const answerParts = answer.split(/[,，、\s]+/).filter(Boolean);
@@ -531,26 +650,60 @@ export async function POST(req: NextRequest) {
         return Response.json({ error: "JSON 文件格式不正确" }, { status: 400 });
       }
     }
-    // -- Word (.docx) --
+    // -- Word (.docx / .doc) --
     else if (
       fileName.endsWith(".docx") ||
+      fileName.endsWith(".doc") ||
       mimeType ===
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      mimeType === "application/msword"
     ) {
-      const { text, imageData } = await parseWordDocx(buffer);
-      if (!text.trim()) {
-        return Response.json({ error: "Word 文档内容为空" }, { status: 400 });
-      }
-      rawQuestions = extractQuestionsFromText(text, imageData);
-      if (rawQuestions.length === 0) {
-        return Response.json(
-          {
-            error:
-              "未能从 Word 文档中解析出题目，请确保格式为: 题目编号 + 题目内容 + 选项(A.B.C.D) + 答案 + 解析",
-            rawText: text.slice(0, 500),
-          },
-          { status: 400 }
-        );
+      try {
+        const { text, imageData } = await parseWordDocx(buffer);
+        if (!text.trim()) {
+          return Response.json({ error: "Word 文档内容为空" }, { status: 400 });
+        }
+        rawQuestions = extractQuestionsFromText(text, imageData);
+        if (rawQuestions.length === 0) {
+          return Response.json(
+            {
+              error:
+                "未能从 Word 文档中解析出题目，请确保格式为: 题目编号 + 题目内容 + 选项(A.B.C.D) + 答案 + 解析",
+              rawText: text.slice(0, 500),
+            },
+            { status: 400 }
+          );
+        }
+      } catch {
+        // .doc files may fail mammoth — try binary text extraction as fallback
+        if (fileName.endsWith(".doc") && !fileName.endsWith(".docx")) {
+          const extracted = extractTextFromDocBinary(buffer);
+          if (extracted.trim().length < 10) {
+            return Response.json(
+              {
+                error:
+                  "无法解析旧版 .doc 文件，请使用 Microsoft Word 将文件另存为 .docx 格式后再上传",
+              },
+              { status: 400 }
+            );
+          }
+          rawQuestions = extractQuestionsFromText(extracted);
+          if (rawQuestions.length === 0) {
+            return Response.json(
+              {
+                error:
+                  "未能从 .doc 文档中解析出题目。请确保按照模板格式编辑，或另存为 .docx 格式后重试",
+                rawText: extracted.slice(0, 500),
+              },
+              { status: 400 }
+            );
+          }
+        } else {
+          return Response.json(
+            { error: "Word 文档解析失败，请确保文件未损坏且格式正确" },
+            { status: 400 }
+          );
+        }
       }
     }
     // -- Excel (.xlsx / .xls) --
@@ -574,7 +727,7 @@ export async function POST(req: NextRequest) {
       return Response.json(
         {
           error:
-            "不支持的文件格式，请上传 JSON、Word (.docx) 或 Excel (.xlsx) 文件",
+            "不支持的文件格式，请上传 JSON、Word (.docx / .doc) 或 Excel (.xlsx / .xls) 文件",
         },
         { status: 400 }
       );

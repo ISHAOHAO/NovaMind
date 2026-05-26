@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { requireAdmin } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
+import { getFromCache, setToCache } from "@/lib/redis";
 
 export const GET = requireAdmin(async (req: NextRequest) => {
   try {
@@ -13,6 +14,12 @@ export const GET = requireAdmin(async (req: NextRequest) => {
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "20", 10)));
     const skip = (page - 1) * limit;
+
+    const cacheKey = `admin:users:list:${search}:${role || ""}:${banned || ""}:${isActivated || ""}:${page}:${limit}`;
+    const cached = await getFromCache<any>(cacheKey);
+    if (cached) {
+      return Response.json(cached);
+    }
 
     const where: Prisma.UserWhereInput = {
       deletedAt: null,
@@ -68,7 +75,7 @@ export const GET = requireAdmin(async (req: NextRequest) => {
       prisma.user.count({ where }),
     ]);
 
-    return Response.json({
+    const responseData = {
       users,
       pagination: {
         page,
@@ -76,7 +83,11 @@ export const GET = requireAdmin(async (req: NextRequest) => {
         total,
         totalPages: Math.ceil(total / limit),
       },
-    });
+    };
+
+    await setToCache(cacheKey, responseData, 15);
+
+    return Response.json(responseData);
   } catch (error) {
     console.error("获取用户列表失败:", error);
     return Response.json({ error: "获取用户列表失败" }, { status: 500 });

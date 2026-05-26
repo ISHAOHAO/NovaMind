@@ -1,9 +1,11 @@
 import { prisma } from "./prisma";
+import { createHash } from "crypto";
 
 interface AiResponse {
   success: boolean;
   content: string;
   error?: string;
+  cached?: boolean;
 }
 
 async function getAiConfig() {
@@ -24,6 +26,12 @@ async function getAiConfig() {
   };
 }
 
+function hashPrompt(prompt: string, systemPrompt: string, model: string): string {
+  return createHash("sha256")
+    .update(`${model}:${systemPrompt}:${prompt}`)
+    .digest("hex");
+}
+
 function cleanAiContent(content: string): string {
   let cleaned = content.trim();
   cleaned = cleaned.replace(/```[a-z]*\s*/gi, "");
@@ -32,14 +40,58 @@ function cleanAiContent(content: string): string {
   return cleaned;
 }
 
+async function getCachedResponse(promptHash: string): Promise<string | null> {
+  try {
+    const cached = await prisma.aiCache.findUnique({
+      where: { promptHash },
+      select: { response: true, expiresAt: true },
+    });
+    if (cached && new Date(cached.expiresAt) > new Date()) {
+      return cached.response;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveToCache(
+  promptHash: string,
+  prompt: string,
+  response: string,
+  model: string
+): Promise<void> {
+  try {
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30);
+    await prisma.aiCache.upsert({
+      where: { promptHash },
+      update: { response, expiresAt },
+      create: { promptHash, prompt, response, model, expiresAt },
+    });
+  } catch {
+    // 缓存保存失败不影响主流程
+  }
+}
+
 export async function askAi(
   prompt: string,
-  systemPrompt?: string
+  systemPrompt?: string,
+  skipCache: boolean = false
 ): Promise<AiResponse> {
   const config = await getAiConfig();
 
   if (!config.enabled || !config.apiKey) {
     return { success: false, content: "", error: "AI 功能未启用或未配置 API Key" };
+  }
+
+  const promptHash = hashPrompt(prompt, systemPrompt || "", config.model);
+
+  if (!skipCache) {
+    const cached = await getCachedResponse(promptHash);
+    if (cached) {
+      return { success: true, content: cached, cached: true };
+    }
   }
 
   try {
@@ -69,7 +121,9 @@ export async function askAi(
     const data = await response.json();
     const content = cleanAiContent(data.choices?.[0]?.message?.content || "");
 
-    return { success: true, content };
+    await saveToCache(promptHash, prompt, content, config.model);
+
+    return { success: true, content, cached: false };
   } catch (error) {
     console.error("AI request failed:", error);
     return {

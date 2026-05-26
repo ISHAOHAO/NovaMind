@@ -2,15 +2,17 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import toast from "react-hot-toast";
 import {
   Search,
   Plus,
   BookOpen,
   ChevronLeft,
   ChevronRight,
-  Upload,
+  AlertTriangle,
+  Loader2,
 } from "lucide-react";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,10 +28,10 @@ import {
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { cn, getDifficultyLabel, getDifficultyColor } from "@/lib/utils";
@@ -90,17 +92,10 @@ export default function QuestionsPage() {
   const [difficulty, setDifficulty] = useState("all");
   const [tagsInput, setTagsInput] = useState("");
 
-  // Upload dialog
-  const [uploadOpen, setUploadOpen] = useState(false);
-  const [uploadTitle, setUploadTitle] = useState("");
-  const [uploadDescription, setUploadDescription] = useState("");
-  const [uploadSource, setUploadSource] = useState("");
-  const [uploadCategory, setUploadCategory] = useState("");
-  const [uploadDifficulty, setUploadDifficulty] = useState("1");
-  const [uploadTags, setUploadTags] = useState("");
-  const [uploading, setUploading] = useState(false);
-  const [uploadMsg, setUploadMsg] = useState("");
-  const [uploadError, setUploadError] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportBank, setReportBank] = useState<QuestionBank | null>(null);
+  const [reportReason, setReportReason] = useState("");
+  const [reporting, setReporting] = useState(false);
 
   const fetchBanks = useCallback(async (page = 1) => {
     const token = localStorage.getItem("novamind_token");
@@ -139,64 +134,43 @@ export default function QuestionsPage() {
     fetchBanks(1);
   };
 
-  const handlePageChange = (page: number) => {
-    fetchBanks(page);
-  };
-
-  const handleUpload = async () => {
-    const token = localStorage.getItem("novamind_token");
-    if (!token) return;
-    if (!uploadTitle.trim() || !uploadSource.trim() || !uploadCategory) {
-      setUploadMsg("请填写必填字段");
-      setUploadError(true);
+  const handleSubmitReport = async () => {
+    if (!reportBank || !reportReason.trim() || reportReason.trim().length < 5) {
+      toast.error("反馈原因至少需要5个字符");
       return;
     }
-    setUploading(true);
-    setUploadMsg("");
-    setUploadError(false);
+    setReporting(true);
     try {
-      const body = {
-        title: uploadTitle.trim(),
-        description: uploadDescription.trim(),
-        source: uploadSource.trim(),
-        category: uploadCategory,
-        tags: uploadTags
-          .split(",")
-          .map((t) => t.trim())
-          .filter(Boolean),
-        difficulty: parseInt(uploadDifficulty),
-        isPublic: true,
-      };
-      const res = await fetch("/api/questions", {
+      const token = localStorage.getItem("novamind_token");
+      const res = await fetch("/api/reports", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          questionBankId: reportBank.id,
+          reason: reportReason.trim(),
+        }),
       });
-      const data = await res.json();
       if (res.ok) {
-        setUploadMsg(data.message || "题库创建成功");
-        setUploadError(false);
-        setUploadOpen(false);
-        setUploadTitle("");
-        setUploadDescription("");
-        setUploadSource("");
-        setUploadCategory("");
-        setUploadDifficulty("1");
-        setUploadTags("");
-        fetchBanks(1);
+        toast.success("反馈已提交，管理员会尽快处理");
+        setReportOpen(false);
+        setReportReason("");
+        setReportBank(null);
       } else {
-        setUploadMsg(data.error || "创建失败");
-        setUploadError(true);
+        const data = await res.json();
+        toast.error(data.error || "提交失败");
       }
     } catch {
-      setUploadMsg("网络错误，请稍后重试");
-      setUploadError(true);
+      toast.error("网络错误");
     } finally {
-      setUploading(false);
+      setReporting(false);
     }
+  };
+
+  const handlePageChange = (page: number) => {
+    fetchBanks(page);
   };
 
   return (
@@ -292,15 +266,31 @@ export default function QuestionsPage() {
             {banks.map((bank) => (
               <Card
                 key={bank.id}
-                className="cursor-pointer transition-shadow hover:shadow-md"
+                className="cursor-pointer transition-shadow hover:shadow-md group"
                 onClick={() => router.push(`/questions/${bank.id}`)}
               >
                 <CardHeader>
                   <div className="flex items-start justify-between">
                     <CardTitle className="text-base line-clamp-1">{bank.title}</CardTitle>
-                    <Badge className={cn("ml-2 shrink-0", getDifficultyColor(bank.difficulty))}>
-                      {bank.difficultyLabel}
-                    </Badge>
+                    <div className="ml-2 flex shrink-0 items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="反馈题库"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setReportBank(bank);
+                          setReportReason("");
+                          setReportOpen(true);
+                        }}
+                      >
+                        <AlertTriangle className="h-3.5 w-3.5 text-muted-foreground hover:text-orange-600" />
+                      </Button>
+                      <Badge className={cn("shrink-0", getDifficultyColor(bank.difficulty))}>
+                        {bank.difficultyLabel}
+                      </Badge>
+                    </div>
                   </div>
                   <CardDescription className="line-clamp-2">
                     {bank.description || "暂无描述"}
@@ -363,97 +353,34 @@ export default function QuestionsPage() {
       <Button
         className="fixed bottom-6 right-6 h-14 w-14 rounded-full shadow-lg"
         size="icon"
-        onClick={() => setUploadOpen(true)}
+        onClick={() => router.push("/questions/upload")}
       >
         <Plus className="h-6 w-6" />
       </Button>
 
-      {/* Upload dialog */}
-      <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
-        <DialogContent className="max-h-[90vh] overflow-auto sm:max-w-lg">
+      <Dialog open={reportOpen} onOpenChange={(open) => { setReportOpen(open); if (!open) setReportBank(null); }}>
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle>上传新题库</DialogTitle>
-            <DialogDescription>填写题库信息，上传后可能需要审核</DialogDescription>
+            <DialogTitle>反馈题库</DialogTitle>
+            <DialogDescription>
+              {reportBank?.title}
+            </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="utitle">题库名称 *</Label>
-              <Input
-                id="utitle"
-                value={uploadTitle}
-                onChange={(e) => setUploadTitle(e.target.value)}
-                placeholder="输入题库名称"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="udesc">描述</Label>
-              <Textarea
-                id="udesc"
-                value={uploadDescription}
-                onChange={(e) => setUploadDescription(e.target.value)}
-                placeholder="题库描述（可选）"
-                rows={3}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="usource">题库来源说明 *</Label>
-              <Input
-                id="usource"
-                value={uploadSource}
-                onChange={(e) => setUploadSource(e.target.value)}
-                placeholder="如：原创、教材、考试真题等"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>分类 *</Label>
-                <Select value={uploadCategory} onValueChange={setUploadCategory}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="选择分类" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {categories.map((c) => (
-                      <SelectItem key={c} value={c}>{c}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>难度</Label>
-                <Select value={uploadDifficulty} onValueChange={setUploadDifficulty}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {difficulties.filter((d) => d.value !== "all").map((d) => (
-                      <SelectItem key={d.value} value={d.value}>{d.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="utags">标签（逗号分隔）</Label>
-              <Input
-                id="utags"
-                value={uploadTags}
-                onChange={(e) => setUploadTags(e.target.value)}
-                placeholder="如：JavaScript, React, 前端"
-              />
-            </div>
-            {uploadMsg && (
-              <p className={`text-sm ${uploadError ? "text-red-600" : "text-green-600"}`}>
-                {uploadMsg}
-              </p>
-            )}
+          <div className="space-y-2">
+            <Label>反馈原因</Label>
+            <Textarea
+              value={reportReason}
+              onChange={(e) => setReportReason(e.target.value)}
+              placeholder="请描述题库存在的问题，如：答案错误、题目不规范、分类不当等..."
+              rows={4}
+            />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setUploadOpen(false)}>
+            <Button variant="outline" onClick={() => { setReportOpen(false); setReportReason(""); }}>
               取消
             </Button>
-            <Button onClick={handleUpload} disabled={uploading}>
-              <Upload className="mr-2 h-4 w-4" />
-              {uploading ? "上传中..." : "上传题库"}
+            <Button onClick={handleSubmitReport} disabled={reporting || reportReason.trim().length < 5}>
+              {reporting ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />提交中...</> : "提交反馈"}
             </Button>
           </DialogFooter>
         </DialogContent>

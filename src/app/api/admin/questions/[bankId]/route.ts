@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireAdmin, TokenPayload } from "@/lib/auth";
 import prisma from "@/lib/prisma";
-import { reviewQuestionSchema } from "@/lib/validations";
 import { invalidatePattern } from "@/lib/redis";
 
 export const GET = requireAdmin(async (req: NextRequest, { params }: { params: Promise<{ bankId: string }> }) => {
@@ -12,6 +11,9 @@ export const GET = requireAdmin(async (req: NextRequest, { params }: { params: P
       where: { id: bankId },
       include: {
         uploader: {
+          select: { id: true, email: true, name: true },
+        },
+        reviewer: {
           select: { id: true, email: true, name: true },
         },
         questions: {
@@ -37,77 +39,132 @@ export const PUT = requireAdmin(async (req: NextRequest, { params }: { params: P
     const currentUser = (req as any).user as TokenPayload;
 
     const body = await req.json();
+    const { status, comment, reviewTemplateId } = body;
 
     const bank = await prisma.questionBank.findUnique({
       where: { id: bankId },
-      select: { id: true, title: true, status: true, isPublic: true },
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        isPublic: true,
+        reviewedById: true,
+        reviewTemplateId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
     });
 
     if (!bank) {
       return Response.json({ error: "题库不存在" }, { status: 404 });
     }
 
-    // Review mode: only for PENDING banks
-    if (body.status && (body.status === "APPROVED" || body.status === "REJECTED")) {
-      const parsed = reviewQuestionSchema.safeParse({
-        bankId,
-        status: body.status,
-        comment: body.comment,
-      });
+    const validStatuses = ["PENDING", "REVIEWING", "APPROVED", "REJECTED", "NEEDS_REVISION"];
 
-      if (!parsed.success) {
-        const errors = parsed.error.errors.map((e) => e.message).join("; ");
-        return Response.json({ error: errors }, { status: 400 });
+    if (status && validStatuses.includes(status)) {
+      const updateData: any = {};
+      const logActions: string[] = [];
+
+      updateData.status = status;
+
+      if (comment !== undefined) {
+        updateData.reviewComment = comment;
+      }
+      if (reviewTemplateId !== undefined) {
+        updateData.reviewTemplateId = reviewTemplateId || null;
       }
 
-      const { status, comment } = parsed.data;
+      if (status === "REVIEWING" && bank.status !== "REVIEWING") {
+        updateData.reviewedById = currentUser.userId;
+        logActions.push("开始审核");
+      }
 
-      if (bank.status !== "PENDING") {
-        return Response.json({ error: "该题库已被审核，无法重复审核" }, { status: 400 });
+      if (["APPROVED", "REJECTED", "NEEDS_REVISION"].includes(status)) {
+        updateData.reviewedAt = new Date();
+        if (!bank.reviewedById) {
+          updateData.reviewedById = currentUser.userId;
+        }
+        logActions.push(
+          status === "APPROVED" ? "通过" : status === "REJECTED" ? "驳回" : "需修改"
+        );
       }
 
       const updated = await prisma.questionBank.update({
         where: { id: bankId },
-        data: {
-          status,
-          reviewComment: comment || null,
-          reviewedById: currentUser.userId,
-          reviewedAt: new Date(),
-        },
+        data: updateData,
       });
 
       await prisma.auditLog.create({
         data: {
           userId: currentUser.userId,
-          action: status === "APPROVED" ? "APPROVE_BANK" : "REJECT_BANK",
-          details: `${status === "APPROVED" ? "通过" : "驳回"}题库: ${bank.title}${comment ? `, 评语: ${comment}` : ""}`,
+          action: "QUESTION_REVIEW",
+          details: `审核题库: ${bank.title}, 状态: ${status}${logActions.length > 0 ? ", 操作: " + logActions.join(", ") : ""}${comment ? `, 评语: ${comment}` : ""}`,
           ip: null,
           userAgent: req.headers.get("user-agent") || null,
         },
       });
 
+      if (["APPROVED", "REJECTED", "NEEDS_REVISION"].includes(status)) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const reviewTime = Math.floor((Date.now() - new Date(bank.updatedAt).getTime()) / 1000);
+
+        const statsData: any = {
+          reviewedCount: { increment: 1 },
+        };
+
+        if (status === "APPROVED") {
+          statsData.approvedCount = { increment: 1 };
+        } else if (status === "REJECTED") {
+          statsData.rejectedCount = { increment: 1 };
+        } else if (status === "NEEDS_REVISION") {
+          statsData.needsRevisionCount = { increment: 1 };
+        }
+
+        await prisma.reviewerDailyStats.upsert({
+          where: {
+            userId_date: {
+              userId: currentUser.userId,
+              date: today,
+            },
+          },
+          update: statsData,
+          create: {
+            userId: currentUser.userId,
+            date: today,
+            reviewedCount: 1,
+            approvedCount: status === "APPROVED" ? 1 : 0,
+            rejectedCount: status === "REJECTED" ? 1 : 0,
+            needsRevisionCount: status === "NEEDS_REVISION" ? 1 : 0,
+            avgReviewTime: reviewTime,
+          },
+        });
+      }
+
       await invalidatePattern("questions:list:*");
+      await invalidatePattern("admin:questions:list:*");
+
+      const statusLabels: Record<string, string> = {
+        PENDING: "待审核",
+        REVIEWING: "审核中",
+        APPROVED: "已通过",
+        REJECTED: "已驳回",
+        NEEDS_REVISION: "需修改",
+      };
 
       return Response.json({
         bank: updated,
-        message: status === "APPROVED" ? "题库审核通过" : "题库已驳回",
+        message: `题库已标记为${statusLabels[status] || status}`,
       });
     }
 
-    // Management mode: toggle isPublic or update other fields
     const updateData: any = {};
     const actions: string[] = [];
 
     if (typeof body.isPublic === "boolean") {
       updateData.isPublic = body.isPublic;
       actions.push(body.isPublic ? "公开题库" : "隐藏题库");
-    }
-
-    if (typeof body.status === "string" && ["APPROVED", "REJECTED", "PENDING"].includes(body.status)) {
-      if (bank.status !== body.status) {
-        updateData.status = body.status;
-        actions.push(`修改状态为: ${body.status}`);
-      }
     }
 
     if (Object.keys(updateData).length === 0) {
@@ -130,6 +187,7 @@ export const PUT = requireAdmin(async (req: NextRequest, { params }: { params: P
     });
 
     await invalidatePattern("questions:list:*");
+    await invalidatePattern("admin:questions:list:*");
 
     return Response.json({
       bank: updated,
@@ -158,7 +216,6 @@ export const DELETE = requireAdmin(async (req: NextRequest, { params }: { params
       return Response.json({ error: "题库不存在" }, { status: 404 });
     }
 
-    // Delete all related records first (questions cascade, but favorites/notes/records reference questions)
     const questions = await prisma.question.findMany({
       where: { bankId },
       select: { id: true },
@@ -187,6 +244,7 @@ export const DELETE = requireAdmin(async (req: NextRequest, { params }: { params
     });
 
     await invalidatePattern("questions:list:*");
+    await invalidatePattern("admin:questions:list:*");
 
     return Response.json({ message: "题库已删除" });
   } catch (error) {

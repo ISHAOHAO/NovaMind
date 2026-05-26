@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { requireAdmin } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
+import { getFromCache, setToCache } from "@/lib/redis";
 
 export const GET = requireAdmin(async (req: NextRequest) => {
   try {
@@ -14,6 +15,12 @@ export const GET = requireAdmin(async (req: NextRequest) => {
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "50", 10)));
     const skip = (page - 1) * limit;
+
+    const cacheKey = `admin:logs:list:${userId || ""}:${action || ""}:${search}:${from || ""}:${to || ""}:${page}:${limit}`;
+    const cached = await getFromCache<any>(cacheKey);
+    if (cached) {
+      return Response.json(cached);
+    }
 
     const where: Prisma.AuditLogWhereInput = {};
 
@@ -36,7 +43,7 @@ export const GET = requireAdmin(async (req: NextRequest) => {
       }
     }
 
-    const [logs, total] = await Promise.all([
+    const [logs, total, uniqueActions] = await Promise.all([
       prisma.auditLog.findMany({
         where,
         skip,
@@ -60,24 +67,36 @@ export const GET = requireAdmin(async (req: NextRequest) => {
         },
       }),
       prisma.auditLog.count({ where }),
+      getFromCache<string[]>("admin:logs:actions"),
     ]);
 
-    const uniqueActions = await prisma.auditLog.findMany({
-      select: { action: true },
-      distinct: ["action"],
-      orderBy: { action: "asc" },
-    });
+    let actions: string[];
+    if (uniqueActions) {
+      actions = uniqueActions;
+    } else {
+      const actionsResult = await prisma.auditLog.findMany({
+        select: { action: true },
+        distinct: ["action"],
+        orderBy: { action: "asc" },
+      });
+      actions = actionsResult.map((a) => a.action);
+      setToCache("admin:logs:actions", actions, 300).catch(() => {});
+    }
 
-    return Response.json({
+    const responseData = {
       logs,
-      actions: uniqueActions.map((a) => a.action),
+      actions,
       pagination: {
         page,
         limit,
         total,
         totalPages: Math.ceil(total / limit),
       },
-    });
+    };
+
+    await setToCache(cacheKey, responseData, 30);
+
+    return Response.json(responseData);
   } catch (error) {
     console.error("获取审计日志失败:", error);
     return Response.json({ error: "获取审计日志失败" }, { status: 500 });

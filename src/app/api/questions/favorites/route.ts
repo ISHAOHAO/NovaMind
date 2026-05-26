@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import prisma from "@/lib/prisma";
 import { authenticateRequest } from "@/lib/auth";
 import { formatDate, getDifficultyLabel } from "@/lib/utils";
+import { deleteFromCache } from "@/lib/redis";
 
 export async function GET(req: NextRequest) {
   try {
@@ -117,6 +118,8 @@ export async function POST(req: NextRequest) {
       });
       isFavorited = true;
     }
+
+    deleteFromCache(`dashboard:${user.userId}`).catch(() => {});
 
     return Response.json({
       data: { questionId, isFavorited },

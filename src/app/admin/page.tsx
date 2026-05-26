@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Users,
   UserPlus,
@@ -14,6 +15,7 @@ import {
   BarChart3,
   PieChart,
   ArrowRight,
+  RotateCw,
 } from "lucide-react";
 import {
   LineChart,
@@ -35,6 +37,8 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { cn, formatDate } from "@/lib/utils";
+import { handleApiError } from "@/lib/api-client";
+import toast from "react-hot-toast";
 
 interface Stats {
   totalUsers: number;
@@ -77,6 +81,7 @@ const actionLabels: Record<string, string> = {
   APPROVE_BANK: "通过题库",
   REJECT_BANK: "驳回题库",
   GENERATE_CODES: "生成激活码",
+  DELETE_CODES: "删除激活码",
   UPDATE_SETTINGS: "更新设置",
   FORCE_ACTIVATE: "强制激活",
   LOGIN: "登录",
@@ -92,6 +97,7 @@ const actionVariants: Record<string, string> = {
   APPROVE_BANK: "default",
   REJECT_BANK: "destructive",
   GENERATE_CODES: "default",
+  DELETE_CODES: "destructive",
   UPDATE_SETTINGS: "secondary",
   DELETE_USER: "destructive",
   FORCE_ACTIVATE: "default",
@@ -107,21 +113,31 @@ const roleLabels: Record<string, string> = {
 };
 
 export default function AdminDashboardPage() {
+  const router = useRouter();
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchDashboard = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchApi("/api/admin/dashboard");
+      setStats(data);
+    } catch (err) {
+      setError("加载仪表盘数据失败，请稍后重试");
+      handleApiError(err, "加载仪表盘数据失败");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        const data = await fetchApi("/api/admin/dashboard");
-        setStats(data);
-      } catch {
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, []);
+    fetchDashboard();
+  }, [fetchDashboard]);
 
   const statCards = [
     {
@@ -129,36 +145,42 @@ export default function AdminDashboardPage() {
       icon: Users,
       value: stats?.totalUsers,
       color: "text-blue-600 bg-blue-50",
+      href: "/admin/users",
     },
     {
       title: "活跃用户",
       icon: UserCheck,
       value: stats?.activeUsers,
       color: "text-green-600 bg-green-50",
+      href: "/admin/users?banned=false",
     },
     {
       title: "今日新增",
       icon: UserPlus,
       value: stats?.todayNewUsers,
       color: "text-cyan-600 bg-cyan-50",
+      href: "/admin/users",
     },
     {
       title: "封禁用户",
       icon: UserX,
       value: stats?.bannedUsers,
       color: "text-red-600 bg-red-50",
+      href: "/admin/users?banned=true",
     },
     {
       title: "待审核题库",
       icon: FileQuestion,
       value: stats?.pendingQuestionBanks,
       color: "text-orange-600 bg-orange-50",
+      href: "/admin/questions?status=PENDING",
     },
     {
       title: "激活码使用率",
       icon: Key,
       value: stats != null ? `${stats.activationUsage}%` : null,
       color: "text-purple-600 bg-purple-50",
+      href: "/admin/activation-codes",
     },
   ];
 
@@ -172,16 +194,30 @@ export default function AdminDashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">管理首页</h1>
-        <p className="text-sm text-muted-foreground">欢迎使用 NovaMind 管理后台</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">管理首页</h1>
+          <p className="text-sm text-muted-foreground">欢迎使用 NovaMind 管理后台</p>
+        </div>
+        <button
+          onClick={() => fetchDashboard(true)}
+          disabled={refreshing}
+          className="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+          title="刷新数据"
+        >
+          <RotateCw className={cn("h-5 w-5", refreshing && "animate-spin")} />
+        </button>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         {statCards.map((stat) => {
           const Icon = stat.icon;
           return (
-            <Card key={stat.title}>
+            <Card
+              key={stat.title}
+              className="cursor-pointer transition-shadow hover:shadow-md"
+              onClick={() => router.push(stat.href)}
+            >
               <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
                 <CardTitle className="text-xs font-medium text-muted-foreground">
                   {stat.title}
@@ -201,6 +237,12 @@ export default function AdminDashboardPage() {
           );
         })}
       </div>
+
+      {error && (
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">
@@ -306,11 +348,18 @@ export default function AdminDashboardPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Users className="h-5 w-5" />
-              最新用户
-            </CardTitle>
-            <CardDescription>最近注册的5位用户</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Users className="h-5 w-5" />
+                  最新用户
+                </CardTitle>
+                <CardDescription>最近注册的5位用户</CardDescription>
+              </div>
+              <a href="/admin/users" className="shrink-0 text-xs text-muted-foreground hover:text-foreground">
+                查看全部 →
+              </a>
+            </div>
           </CardHeader>
           <CardContent>
             {loading ? (
@@ -348,10 +397,15 @@ export default function AdminDashboardPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Clock className="h-5 w-5" />
-              最近操作
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Clock className="h-5 w-5" />
+                最近操作
+              </CardTitle>
+              <a href="/admin/logs" className="shrink-0 text-xs text-muted-foreground hover:text-foreground">
+                查看全部 →
+              </a>
+            </div>
           </CardHeader>
           <CardContent>
             {loading ? (

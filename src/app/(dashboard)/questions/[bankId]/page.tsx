@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter, useParams } from "next/navigation";
+import toast from "react-hot-toast";
 import {
   ChevronLeft,
   ChevronRight,
@@ -14,6 +15,8 @@ import {
   XCircle,
   List,
   X,
+  AlertTriangle,
+  Loader2,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,6 +30,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 interface Question {
@@ -79,6 +90,11 @@ export default function QuestionPracticePage() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResult, setAiResult] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Report
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportReason, setReportReason] = useState("");
+  const [reporting, setReporting] = useState(false);
 
   // Results
   const resultsRef = useRef<AnswerResult[]>([]);
@@ -301,6 +317,41 @@ export default function QuestionPracticePage() {
     }
   };
 
+  const handleSubmitReport = async () => {
+    if (!reportReason.trim() || reportReason.trim().length < 5) {
+      toast.error("反馈原因至少需要5个字符");
+      return;
+    }
+    setReporting(true);
+    try {
+      const token = localStorage.getItem("novamind_token");
+      const res = await fetch("/api/reports", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          questionBankId: bankId,
+          questionId: currentQuestion?.id || null,
+          reason: reportReason.trim(),
+        }),
+      });
+      if (res.ok) {
+        toast.success("反馈已提交，管理员会尽快处理");
+        setReportOpen(false);
+        setReportReason("");
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "提交失败");
+      }
+    } catch {
+      toast.error("网络错误");
+    } finally {
+      setReporting(false);
+    }
+  };
+
   const shuffleQuestions = () => {
     const shuffled = [...questions].sort(() => Math.random() - 0.5);
     setQuestions(shuffled);
@@ -421,11 +472,22 @@ export default function QuestionPracticePage() {
       <div className="flex-1 space-y-4">
         {/* Header */}
         <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-bold">{bankTitle}</h1>
-            <p className="text-sm text-muted-foreground">
-              {answeredCount}/{questions.length} 已答
-            </p>
+          <div className="flex items-center gap-2">
+            <div>
+              <h1 className="text-xl font-bold">{bankTitle}</h1>
+              <p className="text-sm text-muted-foreground">
+                {answeredCount}/{questions.length} 已答
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground hover:text-orange-600"
+              onClick={() => setReportOpen(true)}
+              title="反馈题目"
+            >
+              <AlertTriangle className="h-4 w-4" />
+            </Button>
           </div>
           <Button variant="outline" size="sm" className="lg:hidden" onClick={() => setSidebarOpen(true)}>
             <List className="mr-1 h-4 w-4" />
@@ -792,6 +854,50 @@ export default function QuestionPracticePage() {
           </div>
         </div>
       </div>
+
+      {/* Report Dialog */}
+      <Dialog open={reportOpen} onOpenChange={setReportOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>反馈题目</DialogTitle>
+            <DialogDescription>
+              请描述题目或题库存在的问题
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {currentQuestion && (
+              <div className="rounded border p-3 text-sm bg-muted/30">
+                <p className="font-medium">当前题目：</p>
+                <p className="mt-1 text-muted-foreground">{currentQuestion.content}</p>
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label>反馈原因</Label>
+              <Textarea
+                value={reportReason}
+                onChange={(e) => setReportReason(e.target.value)}
+                placeholder="请详细描述问题，例如：答案错误、选项不合理、题目有歧义等..."
+                rows={4}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setReportOpen(false); setReportReason(""); }}>
+              取消
+            </Button>
+            <Button onClick={handleSubmitReport} disabled={reporting || reportReason.trim().length < 5}>
+              {reporting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  提交中...
+                </>
+              ) : (
+                "提交反馈"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

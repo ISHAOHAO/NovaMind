@@ -15,6 +15,9 @@ import {
   Shield,
   ChevronDown,
   LogOut,
+  MessageSquareText,
+  BarChart3,
+  ShieldAlert,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -39,6 +42,9 @@ const adminNavItems: NavItem[] = [
   { href: "/admin/users", label: "用户管理", icon: Users },
   { href: "/admin/activation-codes", label: "激活码管理", icon: Key },
   { href: "/admin/questions", label: "题库审核", icon: FileQuestion },
+  { href: "/admin/reports", label: "反馈管理", icon: MessageSquareText },
+  { href: "/admin/reviewer-stats", label: "审核绩效", icon: BarChart3 },
+  { href: "/admin/risk-control", label: "登录风控", icon: ShieldAlert },
   { href: "/admin/settings", label: "系统设置", icon: Settings },
   { href: "/admin/logs", label: "操作日志", icon: FileText },
 ];

@@ -4,7 +4,7 @@ import { authenticateRequest } from "@/lib/auth";
 import { questionBankSchema } from "@/lib/validations";
 import { getSystemConfig } from "@/lib/config";
 import { formatDate, getDifficultyLabel } from "@/lib/utils";
-import { invalidatePattern } from "@/lib/redis";
+import { invalidatePattern, getFromCache, setToCache } from "@/lib/redis";
 
 export async function GET(req: NextRequest) {
   try {
@@ -16,6 +16,12 @@ export async function GET(req: NextRequest) {
     const sort = searchParams.get("sort") || "newest";
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "20", 10)));
+
+    const cacheKey = `questions:list:${search}:${category}:${difficulty}:${tagsParam}:${sort}:${page}:${limit}`;
+    const cached = await getFromCache<any>(cacheKey);
+    if (cached) {
+      return Response.json(cached);
+    }
 
     const where: any = {
       status: "APPROVED",
@@ -57,7 +63,7 @@ export async function GET(req: NextRequest) {
         take: limit,
         include: {
           uploader: { select: { id: true, name: true, avatar: true } },
-          questions: { select: { id: true } },
+          _count: { select: { questions: true } },
         },
       }),
       prisma.questionBank.count({ where }),
@@ -72,13 +78,13 @@ export async function GET(req: NextRequest) {
       tags: bank.tags,
       difficulty: bank.difficulty,
       difficultyLabel: getDifficultyLabel(bank.difficulty),
-      questionCount: bank.questions.length,
+      questionCount: bank._count.questions,
       uploader: bank.uploader,
       createdAt: formatDate(bank.createdAt),
       updatedAt: formatDate(bank.updatedAt),
     }));
 
-    return Response.json({
+    const response = {
       data: result,
       pagination: {
         page,
@@ -86,7 +92,11 @@ export async function GET(req: NextRequest) {
         total,
         totalPages: Math.ceil(total / limit),
       },
-    });
+    };
+
+    await setToCache(cacheKey, response, 120);
+
+    return Response.json(response);
   } catch (error: any) {
     console.error("获取题库列表失败:", error);
     return Response.json({ error: "获取题库列表失败，请稍后重试" }, { status: 500 });

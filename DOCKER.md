@@ -151,17 +151,20 @@ NovaMind/
 ├── .dockerignore           # 构建排除
 ├── .env.example            # 环境变量模板
 ├── prisma/
-│   ├── schema.prisma       # 数据库 Schema
+│   ├── schema.prisma       # 数据库 Schema (14 个模型)
 │   └── seed.ts             # 种子数据
 ├── src/
 │   ├── app/                # Next.js App Router
-│   │   ├── (auth)/         # 登录/注册
-│   │   ├── (dashboard)/    # 用户端
-│   │   ├── admin/          # 管理后台
-│   │   └── api/            # API 路由
-│   ├── components/ui/      # shadcn/ui 组件
-│   ├── lib/                # 工具库 (auth, redis, prisma, ai...)
-│   ├── stores/             # Zustand 状态
+│   │   ├── (auth)/         # 登录/注册/验证
+│   │   ├── (dashboard)/    # 用户端（仪表板/题库/分析/笔记/考试）
+│   │   ├── admin/          # 管理后台（用户/激活码/审核/模板/绩效/设置）
+│   │   └── api/            # API 路由 (48 个路由)
+│   ├── components/
+│   │   ├── ui/             # shadcn/ui 组件 (28 个)
+│   │   └── layouts/        # 布局组件
+│   ├── hooks/              # 自定义 Hooks
+│   ├── lib/                # 工具库 (auth, redis, ai, rate-limit...)
+│   ├── stores/             # Zustand 状态 (4 个 store)
 │   └── types/              # TypeScript 类型
 ├── package.json
 ├── tsconfig.json

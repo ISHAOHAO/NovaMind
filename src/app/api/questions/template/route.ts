@@ -90,6 +90,37 @@ async function generateExcelTemplate() {
   ];
 
   XLSX.utils.book_append_sheet(wb, ws, "题库模板");
+
+  // Add usage instruction sheet
+  const instructions = [
+    ["NovaMind 题库上传模板使用说明"],
+    [""],
+    ["一、基本格式要求"],
+    ["1. 类型列填写：单选题 / 多选题 / 判断题 / 填空题 / 完形填空"],
+    ["2. 题目内容为必填项"],
+    ["3. 选项格式：单选题/多选题使用 A. 内容 格式，多个选项用分号(;)分隔，如：A. 选项1; B. 选项2; C. 选项3"],
+    ["4. 答案格式：单选题填字母如 A；多选题用逗号分隔如 A,B,D；判断题填 true 或 false；填空题填完整答案"],
+    ["5. 解析为可选项，填写答案解析"],
+    ["6. 图片为可选项，填写图片URL"],
+    [""],
+    ["二、完形填空特别说明"],
+    ["1. 题目内容中使用 __1__、__2__、__3__ 标记每个空白处"],
+    ["    示例：JavaScript是一种__1__语言，主要用于__2__开发。"],
+    ["2. 选项列格式：每个空白的选项用分号(;)分隔，空白内选项用竖线(|)分隔"],
+    ["    示例：1. A. 编译型|B. 解释型|C. 标记型|D. 汇编型; 2. A. 后端|B. 桌面|C. 前端|D. 移动端"],
+    ["3. 答案格式：按空白顺序用逗号分隔每个空白的答案字母"],
+    ["    示例：B,C 表示空白1选B，空白2选C"],
+    [""],
+    ["三、注意事项"],
+    ["1. 请勿修改列的顺序"],
+    ["2. 请确保每道题目都有题目内容和答案"],
+    ["3. 选择题必须有至少2个选项"],
+    ["4. 上传前可以使用 AI 分析功能检查题目质量"],
+  ];
+
+  const wsInstructions = XLSX.utils.aoa_to_sheet(instructions);
+  wsInstructions["!cols"] = [{ wch: 80 }];
+  XLSX.utils.book_append_sheet(wb, wsInstructions, "使用说明");
   const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
 
   return Buffer.from(buffer);
@@ -134,11 +165,15 @@ function generateWordTemplate(): string {
       <div class="tip"><strong>使用说明：</strong>将此文件内容复制到 Word 中，按照下面的格式编辑您的题目。每道题之间用空行分隔。</div>
       <div class="note">
         <strong>格式要求：</strong><br/>
-        1. 每道题以 "数字. " 开头<br/>
-        2. 选项格式：A. 选项内容<br/>
-        3. 答案格式：答案：A<br/>
+        1. 每道题以 "数字. " 开头，后面跟题目内容<br/>
+        2. 单选题/多选题选项格式：A. 选项内容<br/>
+        3. 答案格式：答案：A（多选用逗号分隔：答案：A,B,D）<br/>
         4. 解析格式：解析：解析内容<br/>
-        5. 题目之间用空行分隔
+        5. 题目之间用空行分隔<br/>
+        6. <strong>完形填空格式：</strong><br/>
+           &nbsp;&nbsp;- 题目内容中使用 __1__、__2__ 标记每个空白处<br/>
+           &nbsp;&nbsp;- 每个空白的选项格式：1. A. 选项1|B. 选项2|C. 选项3|D. 选项4<br/>
+           &nbsp;&nbsp;- 答案格式：答案：B,C,A（每个空白的答案按顺序用逗号分隔）
       </div>
       ${body}
     </body>

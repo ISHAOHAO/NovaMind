@@ -43,7 +43,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - DATABASE_URL=postgresql://novamind:novamind_password@postgres:5432/novamind?schema=public
+      - DATABASE_URL=postgresql://novamind:novamind_password@postgres:5432/novamind?schema=public&connection_limit=20
       - REDIS_URL=redis://redis:6379
       - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
       - NODE_ENV=production

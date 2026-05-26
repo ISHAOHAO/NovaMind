@@ -1,9 +1,18 @@
 import { prisma } from "./prisma";
+import { getFromCache, setToCache, invalidatePattern } from "./redis";
 
 export async function getSystemConfig(key: string, defaultValue = ""): Promise<string> {
   try {
+    const cacheKey = `config:${key}`;
+    const cached = await getFromCache<string>(cacheKey);
+    if (cached !== null) {
+      return cached;
+    }
+
     const config = await prisma.systemConfig.findUnique({ where: { key } });
-    return config?.value ?? defaultValue;
+    const value = config?.value ?? defaultValue;
+    await setToCache(cacheKey, value, 300);
+    return value;
   } catch {
     return defaultValue;
   }
@@ -30,6 +39,7 @@ export async function setSystemConfig(key: string, value: string): Promise<void>
     update: { value },
     create: { key, value, description: "" },
   });
+  await invalidatePattern("config:*");
 }
 
 const configCache = new Map<string, { value: string; expiresAt: number }>();

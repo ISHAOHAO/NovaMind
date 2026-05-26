@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import prisma from "@/lib/prisma";
 import { authenticateRequest } from "@/lib/auth";
 import { formatDate } from "@/lib/utils";
+import { deleteFromCache } from "@/lib/redis";
 
 export async function POST(req: NextRequest) {
   try {
@@ -40,6 +41,8 @@ export async function POST(req: NextRequest) {
         sessionId: sessionId || null,
       },
     });
+
+    deleteFromCache(`dashboard:${user.userId}`).catch(() => {});
 
     return Response.json({
       data: {

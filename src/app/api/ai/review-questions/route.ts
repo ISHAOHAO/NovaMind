@@ -26,47 +26,49 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "单次最多审查 50 道题目" }, { status: 400 });
     }
 
+    const typeLabelMap: Record<string, string> = {
+      single: "单选题", multiple: "多选题", truefalse: "判断题",
+      fillblank: "填空题", cloze: "完形填空",
+    };
+
     const questionsForPrompt = questions.map((q: any, i: number) => {
+      const typeLabel = typeLabelMap[q.type] || q.type || "single";
       let optionsStr = "";
       if (Array.isArray(q.options) && q.options.length > 0) {
-        optionsStr = q.options
-          .map((o: any) => `${o.key}: ${o.value}`)
-          .join("\n");
+        if (q.type === "cloze") {
+          optionsStr = "空白选项:" + q.options
+            .map((o: any) => `${o.key}:${o.value}`)
+            .join("; ");
+        } else {
+          optionsStr = "选项:" + q.options
+            .map((o: any) => `${o.key}:${o.value}`)
+            .join(", ");
+        }
       }
-      return `【题目 ${i + 1}】
-类型: ${q.type || "single"}
-内容: ${q.content || ""}
-${optionsStr ? `选项:\n${optionsStr}` : ""}
-答案: ${q.answer || ""}
-解析: ${q.analysis || "无"}
----`;
-    }).join("\n\n");
+      const analysisSnippet = q.analysis ? ` 解析:${String(q.analysis).slice(0, 80)}` : "";
+      return `[${i + 1}] ${typeLabel} | ${q.content || ""} | ${optionsStr} | 答案:${q.answer || ""}${analysisSnippet}`;
+    }).join("\n");
 
-    const prompt = `你是一个专业的题目审查助手。请审查以下题目，检查是否存在以下问题：
+    const prompt = `审查以下题目，检查：答案是否在选项中、选项是否合理、判断题正误、答案格式是否正确、解析是否与答案一致。
 
-1. 答案与题目内容不一致（如单选题答案是选项不存在的选项）
-2. 题目内容有明显知识性错误
-3. 选项设计不合理（如单选题有多个明显正确答案）
-4. 答案格式不正确（如多选题答案未用逗号分隔）
-5. 解析与答案矛盾
-6. 填空题答案不完整
+返回 JSON 数组（无其他内容）：
+[{ "index": 题号, "hasIssue": true/false, "severity": "error"|"warning"|"info", "message": "问题描述", "suggestion": "修改建议" }]
+无问题题目：{ "index": 题号, "hasIssue": false, "severity": "info", "message": "通过", "suggestion": "" }
 
-请以 JSON 数组格式返回审查结果。每个元素包含：
-- index: 题目序号（从1开始）
-- hasIssue: 是否有问题 (true/false)
-- severity: 严重程度 ("error" | "warning" | "info")
-- message: 问题描述（无问题则为"通过"）
-- suggestion: 修改建议（无问题则为空字符串）
-
-只返回 JSON 数组，不要有其他内容。
-
-题目列表：
+题目：
 ${questionsForPrompt}`;
 
     const result = await askAi(
       prompt,
-      "你是一个专业的题目审查助手。你只返回 JSON 格式的审查结果。"
+      "你是题库审查助手。只返回 JSON 数组，不要任何解释文字。格式：[{index,hasIssue,severity,message,suggestion}]"
     );
+
+    if (!result.success || !result.content) {
+      return NextResponse.json(
+        { error: result.error || "AI 服务返回异常，请稍后重试" },
+        { status: 500 }
+      );
+    }
 
     try {
       let content = result.content || "";
@@ -76,7 +78,8 @@ ${questionsForPrompt}`;
     } catch {
       return NextResponse.json({
         success: true,
-        content: result.content,
+        reviews: [{ index: 0, hasIssue: true, severity: "warning", message: "AI 返回格式异常，无法解析审查结果", suggestion: "请手动核验题目，或稍后重试 AI 分析" }],
+        rawContent: result.content.slice(0, 2000),
         note: "AI 返回了非标准格式，请查看原始内容",
       });
     }

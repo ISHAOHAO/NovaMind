@@ -611,7 +611,7 @@ export default function UploadQuestionsPage() {
         <CardHeader>
           <CardTitle className="text-lg">下载模板</CardTitle>
           <CardDescription>
-            请先下载对应格式的模板，按照模板格式编辑题目后再上传。支持 JSON、Word (.docx)、Excel (.xlsx) 三种格式。
+            请先下载对应格式的模板，按照模板格式编辑题目后再上传。支持 JSON、Word (.docx/.doc)、Excel (.xlsx/.xls) 格式。
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -952,7 +952,7 @@ export default function UploadQuestionsPage() {
             <CardHeader>
               <CardTitle className="text-lg">文件导入</CardTitle>
               <CardDescription>
-                选择已按模板格式编辑好的 JSON / Word (.docx) / Excel (.xlsx) 文件进行导入。导入后可先用 AI 分析检查题目质量。
+                选择已按模板格式编辑好的 JSON / Word (.docx/.doc) / Excel (.xlsx/.xls) 文件进行导入。导入后可先用 AI 分析检查题目质量。
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -960,7 +960,7 @@ export default function UploadQuestionsPage() {
                 <FileUp className="mx-auto mb-3 h-10 w-10 text-muted-foreground" />
                 <p className="mb-2 text-sm text-muted-foreground">点击下方按钮选择文件，或拖放文件到此处</p>
                 <input
-                  ref={fileInputRef} type="file" accept=".json,.docx,.xlsx,.xls"
+                  ref={fileInputRef} type="file" accept=".json,.docx,.doc,.xlsx,.xls"
                   onChange={handleFileUpload} className="hidden"
                 />
                 <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={fileParsing}>

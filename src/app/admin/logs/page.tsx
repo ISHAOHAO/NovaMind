@@ -6,8 +6,11 @@ import {
   ChevronLeft,
   ChevronRight,
   FileText,
-  Filter,
+  RotateCw,
+  Copy,
+  Check,
 } from "lucide-react";
+import toast from "react-hot-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,6 +31,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { formatDate } from "@/lib/utils";
 
 interface AuditLog {
@@ -60,6 +69,7 @@ const actionLabels: Record<string, string> = {
   APPROVE_BANK: "通过题库",
   REJECT_BANK: "驳回题库",
   GENERATE_CODES: "生成激活码",
+  DELETE_CODES: "删除激活码",
   UPDATE_SETTINGS: "更新设置",
   FORCE_ACTIVATE: "强制激活",
   LOGIN: "登录",
@@ -78,6 +88,7 @@ const actionVariants: Record<string, "default" | "secondary" | "success" | "warn
   APPROVE_BANK: "success",
   REJECT_BANK: "destructive",
   GENERATE_CODES: "default",
+  DELETE_CODES: "destructive",
   UPDATE_SETTINGS: "secondary",
   FORCE_ACTIVATE: "warning",
   LOGIN: "outline",
@@ -102,6 +113,9 @@ export default function LogsPage() {
   const [actionFilter, setActionFilter] = useState("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [copiedIp, setCopiedIp] = useState<string | null>(null);
 
   const fetchLogs = useCallback(async (page: number) => {
     setLoading(true);
@@ -123,6 +137,7 @@ export default function LogsPage() {
       setActions(data.actions || []);
       setPagination(data.pagination || { page: 1, limit: 50, total: 0, totalPages: 0 });
     } catch {
+      toast.error("加载日志失败");
     } finally {
       setLoading(false);
     }
@@ -131,6 +146,37 @@ export default function LogsPage() {
   useEffect(() => {
     fetchLogs(1);
   }, [fetchLogs]);
+
+  const formatDateStr = (d: Date) => d.toISOString().slice(0, 10);
+
+  const setDatePreset = (preset: string) => {
+    const today = new Date();
+    if (preset === "today") {
+      setDateFrom(formatDateStr(today));
+      setDateTo(formatDateStr(today));
+    } else if (preset === "7days") {
+      const d = new Date(today);
+      d.setDate(d.getDate() - 7);
+      setDateFrom(formatDateStr(d));
+      setDateTo(formatDateStr(today));
+    } else if (preset === "30days") {
+      const d = new Date(today);
+      d.setDate(d.getDate() - 30);
+      setDateFrom(formatDateStr(d));
+      setDateTo(formatDateStr(today));
+    } else if (preset === "all") {
+      setDateFrom("");
+      setDateTo("");
+    }
+  };
+
+  const handleCopyIp = (ip: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(ip);
+    setCopiedIp(ip);
+    toast.success("IP 已复制");
+    setTimeout(() => setCopiedIp(null), 2000);
+  };
 
   return (
     <div className="space-y-6">
@@ -141,9 +187,19 @@ export default function LogsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <FileText className="h-5 w-5" />
-            操作日志
+          <CardTitle className="flex items-center justify-between text-lg">
+            <div className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              操作日志
+            </div>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => fetchLogs(pagination.page)}
+              disabled={loading}
+            >
+              <RotateCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            </Button>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -184,6 +240,36 @@ export default function LogsPage() {
               className="w-[160px]"
               title="结束日期"
             />
+            <div className="flex gap-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDatePreset("today")}
+              >
+                今天
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDatePreset("7days")}
+              >
+                近7天
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDatePreset("30days")}
+              >
+                近30天
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDatePreset("all")}
+              >
+                全部
+              </Button>
+            </div>
           </div>
 
           {loading ? (
@@ -201,19 +287,27 @@ export default function LogsPage() {
                     <TableHead>用户</TableHead>
                     <TableHead className="w-[120px]">操作</TableHead>
                     <TableHead>详情</TableHead>
-                    <TableHead className="w-[140px]">IP</TableHead>
+                    <TableHead className="w-[160px]">IP</TableHead>
+                    <TableHead className="w-[80px] text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {logs.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={5} className="text-center text-muted-foreground">
+                      <TableCell colSpan={6} className="text-center text-muted-foreground">
                         暂无日志记录
                       </TableCell>
                     </TableRow>
                   ) : (
                     logs.map((log) => (
-                      <TableRow key={log.id}>
+                      <TableRow
+                        key={log.id}
+                        className="cursor-pointer hover:bg-muted/50"
+                        onClick={() => {
+                          setSelectedLog(log);
+                          setDetailOpen(true);
+                        }}
+                      >
                         <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                           {log.createdAt ? formatDate(log.createdAt) : "-"}
                         </TableCell>
@@ -241,7 +335,28 @@ export default function LogsPage() {
                           {log.details || "-"}
                         </TableCell>
                         <TableCell className="text-xs font-mono text-muted-foreground">
-                          {log.ip || "-"}
+                          <span className="inline-flex items-center gap-1">
+                            {log.ip || "-"}
+                            {log.ip && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-5 w-5"
+                                onClick={(e) => handleCopyIp(log.ip!, e)}
+                              >
+                                {copiedIp === log.ip ? (
+                                  <Check className="h-3 w-3 text-green-600" />
+                                ) : (
+                                  <Copy className="h-3 w-3" />
+                                )}
+                              </Button>
+                            )}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button variant="ghost" size="sm" className="h-7 text-xs">
+                            查看
+                          </Button>
                         </TableCell>
                       </TableRow>
                     ))
@@ -280,6 +395,56 @@ export default function LogsPage() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>日志详情</DialogTitle>
+          </DialogHeader>
+          {selectedLog && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">操作类型：</span>
+                <Badge variant={actionVariants[selectedLog.action] || "outline"}>
+                  {actionLabels[selectedLog.action] || selectedLog.action}
+                </Badge>
+              </div>
+              <div>
+                <span className="text-sm text-muted-foreground">时间：</span>
+                <span className="text-sm">
+                  {selectedLog.createdAt
+                    ? new Date(selectedLog.createdAt).toLocaleString("zh-CN")
+                    : "-"}
+                </span>
+              </div>
+              <div>
+                <span className="text-sm text-muted-foreground">用户：</span>
+                <span className="text-sm">
+                  {selectedLog.user
+                    ? `${selectedLog.user.name} (${selectedLog.user.email})`
+                    : "系统"}
+                </span>
+              </div>
+              <div>
+                <span className="text-sm text-muted-foreground">详情：</span>
+                <p className="mt-1 whitespace-pre-wrap rounded bg-muted p-3 text-sm">
+                  {selectedLog.details || "无"}
+                </p>
+              </div>
+              <div>
+                <span className="text-sm text-muted-foreground">IP 地址：</span>
+                <code className="text-sm">{selectedLog.ip || "无"}</code>
+              </div>
+              <div>
+                <span className="text-sm text-muted-foreground">User Agent：</span>
+                <p className="mt-1 max-h-20 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 text-xs text-muted-foreground">
+                  {selectedLog.userAgent || "无"}
+                </p>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

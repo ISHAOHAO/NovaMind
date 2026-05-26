@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import jwt from "jsonwebtoken";
+import prisma from "@/lib/prisma";
 
 const JWT_SECRET = process.env.JWT_SECRET || "novamind-jwt-secret-change-in-production";
 
@@ -49,6 +50,14 @@ export async function authenticateRequest(
   if (!token) return null;
 
   const payload = verifyToken(token);
+  if (!payload) return null;
+
+  const userExists = await prisma.user.findUnique({
+    where: { id: payload.userId },
+    select: { id: true },
+  });
+  if (!userExists) return null;
+
   return payload;
 }
 
@@ -56,7 +65,7 @@ export function requireAuth(handler: Function) {
   return async function (req: NextRequest, context?: any) {
     const user = await authenticateRequest(req);
     if (!user) {
-      return Response.json({ error: "未登录" }, { status: 401 });
+      return Response.json({ error: "登录已过期，请重新登录" }, { status: 401 });
     }
     (req as any).user = user;
     return handler(req, context);
@@ -65,12 +74,11 @@ export function requireAuth(handler: Function) {
 
 export function requireAdmin(handler: Function) {
   return async function (req: NextRequest, context?: any) {
-    const user = await authenticateRequest(req);
-    if (!user) {
-      return Response.json({ error: "未登录" }, { status: 401 });
+    const payload = await authenticateRequest(req);
+    if (!payload) {
+      return Response.json({ error: "登录已过期，请重新登录" }, { status: 401 });
     }
 
-    const payload = user as TokenPayload;
     if (payload.role !== "ADMIN" && payload.role !== "SUPER_ADMIN") {
       return Response.json({ error: "无权限" }, { status: 403 });
     }
