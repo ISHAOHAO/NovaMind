@@ -256,7 +256,7 @@ export default function UploadQuestionsPage() {
 
     const a = document.createElement("a");
     a.href = `/api/questions/template${query}`;
-    a.download = `novamind-template.${format === "word" ? "doc" : format === "excel" ? "xlsx" : "json"}`;
+    a.download = `novamind-template.${format === "word" ? "docx" : format === "excel" ? "xlsx" : "json"}`;
     a.click();
   };
 

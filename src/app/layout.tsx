@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import Providers from "./providers";
 import { Toaster } from "react-hot-toast";
+import { LoadingScreen } from "@/components/ui/loading-screen";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -17,7 +19,9 @@ export default function RootLayout({
     <html lang="zh-CN">
       <body className="min-h-screen bg-background antialiased">
         <Providers>
-          {children}
+          <Suspense fallback={<LoadingScreen message="正在加载..." />}>
+            {children}
+          </Suspense>
           <Toaster position="top-center" />
         </Providers>
       </body>

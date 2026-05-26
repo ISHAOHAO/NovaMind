@@ -9,6 +9,24 @@ services:
       POSTGRES_USER: novamind
       POSTGRES_PASSWORD: novamind_password
       POSTGRES_DB: novamind
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "effective_cache_size=768MB"
+      - "-c"
+      - "maintenance_work_mem=64MB"
+      - "-c"
+      - "wal_buffers=16MB"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "max_connections=50"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -16,6 +34,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 15s
     networks:
       - novamind-network
 
@@ -23,7 +42,15 @@ services:
     image: redis:7-alpine
     container_name: novamind-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --tcp-keepalive 60
+      --tcp-backlog 511
+      --save ""
+      --databases 1
     volumes:
       - redis_data:/data
     healthcheck:
@@ -31,6 +58,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
     networks:
       - novamind-network
 
@@ -43,7 +71,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - DATABASE_URL=postgresql://novamind:novamind_password@postgres:5432/novamind?schema=public&connection_limit=20
+      - DATABASE_URL=postgresql://novamind:novamind_password@postgres:5432/novamind?schema=public&connection_limit=15&pool_timeout=10
       - REDIS_URL=redis://redis:6379
       - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
       - NODE_ENV=production

@@ -416,12 +416,65 @@ function extractTextFromDocBinary(buffer: Buffer): string {
 }
 
 // Simplified local extractor (mirrors upload route logic)
+const QUESTION_SPLIT_PATTERNS = [
+  /(?:^|\n)(?=\d+[.、)）](?!\s*[A-E][.、:：)）])\s*\S)/,
+  /(?:^|\n)(?=第\s*\d+\s*题)/,
+  /(?:^|\n)(?=Q\d+[:：])/,
+  /(?:^|\n)(?=[一二三四五六七八九十]+[.、)）])/,
+  /(?:^|\n)(?=题目\s*\d+\s*[:：])/,
+];
+
+function splitIntoBlocks(text: string): string[] {
+  const cleaned = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  const blankLineBlocks = cleaned.split(/\n\n+/).filter((b) => b.trim());
+
+  const result: string[] = [];
+  for (const block of blankLineBlocks) {
+    let remaining = block;
+    const parts: string[] = [];
+
+    while (remaining.length > 0) {
+      let bestMatch: { index: number; length: number } | null = null;
+
+      for (const pattern of QUESTION_SPLIT_PATTERNS) {
+        const globalPattern = new RegExp(pattern.source, pattern.flags.replace("g", "") + "g");
+        for (const m of remaining.matchAll(globalPattern)) {
+          if (m.index === undefined) continue;
+          const splitAt = m.index + (m[0].startsWith("\n") ? 1 : 0);
+          if (splitAt > 0 && (!bestMatch || splitAt < bestMatch.index)) {
+            bestMatch = { index: splitAt, length: 0 };
+          }
+        }
+      }
+
+      if (bestMatch) {
+        parts.push(remaining.slice(0, bestMatch.index).trim());
+        remaining = remaining.slice(bestMatch.index);
+      } else {
+        parts.push(remaining.trim());
+        break;
+      }
+    }
+
+    result.push(...parts.filter((p) => p.length > 0));
+  }
+
+  return result;
+}
+
 function extractQuestionsFromText(text: string): any[] {
   const questions: any[] = [];
-  const blocks = text.split(/\n\n+/).filter((b) => b.trim().length > 5);
+  const blocks = splitIntoBlocks(text);
 
   for (const block of blocks) {
     const trimmed = block.trim();
+    if (trimmed.length < 5) continue;
+
     const q: any = {
       type: "single",
       content: trimmed,
@@ -430,27 +483,117 @@ function extractQuestionsFromText(text: string): any[] {
       analysis: "",
     };
 
-    const optRegex = /([A-E])[.、:：]\s*(.+?)(?=\s*[A-E][.、:：]|\s*答案|\s*解析|$)/g;
-    const opts = [...trimmed.matchAll(optRegex)];
-    if (opts.length >= 2) {
-      q.options = opts.map((m) => ({ key: m[1], value: m[2].trim() }));
-      q.content = trimmed.replace(optRegex, "").replace(/\n{2,}/g, "\n").trim();
+    const lines = trimmed.split("\n").map((l) => l.trim()).filter(Boolean);
+
+    for (const line of lines) {
+      const ansMatch = line.match(/答案[:：]\s*(.+)/);
+      if (ansMatch) {
+        q.answer = ansMatch[1].trim();
+        continue;
+      }
+      const anaMatch = line.match(/解析[:：]\s*(.+)/);
+      if (anaMatch) {
+        q.analysis = anaMatch[1].trim();
+        continue;
+      }
+      const optMatch = line.match(/^([A-E])[.、:：)]\s*(.+)$/);
+      if (optMatch) {
+        q.options.push({ key: optMatch[1], value: optMatch[2].trim() });
+        continue;
+      }
+      const clozeMatch = line.match(/^(\d+)\s*[.、]\s*([A-D]\.\s*.+)$/);
+      if (clozeMatch) {
+        q.options.push({ key: clozeMatch[1], value: clozeMatch[2].trim() });
+        continue;
+      }
     }
 
-    const ansMatch = trimmed.match(/答案[:：]\s*(.+)/);
-    if (ansMatch) {
-      q.answer = ansMatch[1].trim();
-      q.content = q.content.replace(ansMatch[0], "").trim();
+    // Strip leading number prefix from content
+    q.content = q.content
+      .replace(/^\d+[.、)）]\s*/, "")
+      .replace(/^第\s*\d+\s*题\s*[:：]?\s*/, "")
+      .replace(/^Q\d+[:：]\s*/i, "")
+      .replace(/^[一二三四五六七八九十]+[.、)）]\s*/, "")
+      .replace(/^题目\s*\d+\s*[:：]\s*/, "");
+
+    // Separate content from options/answer/analysis
+    if (q.options.length > 0) {
+      const firstOptIdx = trimmed.indexOf(q.options[0].key + ".");
+      if (firstOptIdx > 0) {
+        q.content = trimmed.slice(0, firstOptIdx).trim();
+      }
+    } else {
+      const ansIdx = trimmed.indexOf("答案：");
+      const anaIdx = trimmed.indexOf("解析：");
+      let cutIdx = trimmed.length;
+      if (ansIdx >= 0) cutIdx = Math.min(cutIdx, ansIdx);
+      if (anaIdx >= 0) cutIdx = Math.min(cutIdx, anaIdx);
+      if (cutIdx < trimmed.length) {
+        q.content = trimmed.slice(0, cutIdx).trim();
+      }
     }
 
-    const anaMatch = trimmed.match(/解析[:：]\s*([\s\S]+)/);
-    if (anaMatch) {
-      q.analysis = anaMatch[1].trim();
-      q.content = q.content.replace(anaMatch[0], "").trim();
-    }
+    // Strip number prefix again after re-extraction
+    q.content = q.content
+      .replace(/^\d+[.、)）]\s*/, "")
+      .replace(/^第\s*\d+\s*题\s*[:：]?\s*/, "")
+      .replace(/^Q\d+[:：]\s*/i, "")
+      .replace(/^[一二三四五六七八九十]+[.、)）]\s*/, "")
+      .replace(/^题目\s*\d+\s*[:：]\s*/, "");
 
-    if (q.content.length >= 5) questions.push(q);
+    // Detect question type
+    q.type = detectQuestionType(q.content, q.options, q.answer);
+
+    if (q.content.length >= 2) questions.push(q);
   }
 
   return questions;
+}
+
+function detectQuestionType(
+  content: string,
+  options: { key: string; value: string }[],
+  answer: string
+): string {
+  const lowerAns = answer.toLowerCase().trim();
+
+  const trueValues = ["对", "正确", "true", "t", "是", "yes", "y", "√", "✓", "✔"];
+  const falseValues = ["错", "错误", "false", "f", "否", "no", "n", "×", "✗", "✘"];
+  if (trueValues.includes(lowerAns) || falseValues.includes(lowerAns)) {
+    return "truefalse";
+  }
+
+  if (/__\d+__/.test(content) || /___\d+___/.test(content)) {
+    return "cloze";
+  }
+
+  const validOptions = options.filter((o) => o.value.trim());
+  if (validOptions.length >= 1) {
+    const hasNumberedKeys = validOptions.every((o) => /^\d+$/.test(o.key));
+    const hasPipeSeparatedChoices = validOptions.some((o) => /[A-D]\.\s*.+[|｜][A-D]\.\s*.+/.test(o.value));
+    if (hasNumberedKeys && hasPipeSeparatedChoices) {
+      return "cloze";
+    }
+  }
+
+  if (
+    content.includes("____") ||
+    content.includes("___") ||
+    content.includes("（  ）") ||
+    content.includes("(  )") ||
+    content.includes("（ ）") ||
+    content.includes("()")
+  ) {
+    return "fillblank";
+  }
+
+  if (validOptions.length >= 2) {
+    const answerParts = answer.split(/[,，、\s]+/).filter(Boolean);
+    if (answerParts.length > 1) {
+      return "multiple";
+    }
+    return "single";
+  }
+
+  return "single";
 }

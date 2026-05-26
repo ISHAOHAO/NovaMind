@@ -9,9 +9,13 @@ import {
   ChevronLeft,
   ChevronRight,
   Brain,
+  Pencil,
+  Check,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -79,6 +83,9 @@ export default function NotesPage() {
   const [summary, setSummary] = useState("");
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [updatingImportance, setUpdatingImportance] = useState<string | null>(null);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingContent, setEditingContent] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const fetchNotes = useCallback(async () => {
     setLoading(true);
@@ -205,6 +212,46 @@ export default function NotesPage() {
         a.click();
         URL.revokeObjectURL(url);
       });
+  };
+
+  const handleStartEdit = (note: Note) => {
+    setEditingNoteId(note.id);
+    setEditingContent(note.content);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingNoteId(null);
+    setEditingContent("");
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingNoteId || !editingContent.trim()) return;
+    setSavingEdit(true);
+    try {
+      const token = localStorage.getItem("novamind_token");
+      const note = notes.find((n) => n.id === editingNoteId);
+      if (!note) return;
+      await fetch("/api/questions/notes", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          questionId: note.questionId,
+          content: editingContent.trim(),
+          importance: note.importance,
+        }),
+      });
+      setNotes((prev) =>
+        prev.map((n) => (n.id === editingNoteId ? { ...n, content: editingContent.trim() } : n))
+      );
+      setEditingNoteId(null);
+      setEditingContent("");
+    } catch {
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   const handleImportanceChange = async (noteId: string, importance: number) => {
@@ -379,9 +426,40 @@ export default function NotesPage() {
                           <p className="text-sm text-muted-foreground line-clamp-1 mb-1">
                             {note.question.content}
                           </p>
-                          <p className="text-sm whitespace-pre-wrap line-clamp-2">
-                            {note.content}
-                          </p>
+                          {editingNoteId === note.id ? (
+                            <div className="space-y-2">
+                              <Textarea
+                                value={editingContent}
+                                onChange={(e) => setEditingContent(e.target.value)}
+                                placeholder="编辑笔记内容..."
+                                rows={3}
+                                className="text-sm"
+                              />
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="default"
+                                  onClick={handleSaveEdit}
+                                  disabled={savingEdit || !editingContent.trim()}
+                                >
+                                  <Check className="mr-1 h-3 w-3" />
+                                  {savingEdit ? "保存中..." : "保存"}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={handleCancelEdit}
+                                >
+                                  <X className="mr-1 h-3 w-3" />
+                                  取消
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-sm whitespace-pre-wrap line-clamp-2">
+                              {note.content}
+                            </p>
+                          )}
                           <div className="mt-2 flex items-center gap-2">
                             <div className="flex items-center gap-0.5">
                               {[1, 2, 3, 4, 5].map((star) => (
@@ -417,6 +495,16 @@ export default function NotesPage() {
                             <span className="text-xs text-muted-foreground">
                               {note.updatedAt}
                             </span>
+                            {editingNoteId !== note.id && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="ml-auto h-7 w-7"
+                                onClick={() => handleStartEdit(note)}
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
                           </div>
                         </div>
                       </div>

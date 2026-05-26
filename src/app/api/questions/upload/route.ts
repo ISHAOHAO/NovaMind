@@ -254,7 +254,7 @@ function extractTextFromDocBinary(buffer: Buffer): string {
 // ============================================================
 
 const QUESTION_SPLIT_PATTERNS = [
-  /(?:^|\n)(?=\d+[.、)）]\s*\S)/,
+  /(?:^|\n)(?=\d+[.、)）](?!\s*[A-E][.、:：)）])\s*\S)/,
   /(?:^|\n)(?=第\s*\d+\s*题)/,
   /(?:^|\n)(?=Q\d+[:：])/,
   /(?:^|\n)(?=[一二三四五六七八九十]+[.、)）])/,
@@ -301,9 +301,9 @@ function splitIntoBlocks(text: string): string[] {
       let bestMatch: { index: number; length: number } | null = null;
 
       for (const pattern of QUESTION_SPLIT_PATTERNS) {
-        const m = remaining.match(pattern);
-        if (m && m.index !== undefined) {
-          // We want to be precise: the split should start at the pattern beginning
+        const globalPattern = new RegExp(pattern.source, pattern.flags.replace("g", "") + "g");
+        for (const m of remaining.matchAll(globalPattern)) {
+          if (m.index === undefined) continue;
           const splitAt = m.index + (m[0].startsWith("\n") ? 1 : 0);
           if (splitAt > 0 && (!bestMatch || splitAt < bestMatch.index)) {
             bestMatch = { index: splitAt, length: 0 };

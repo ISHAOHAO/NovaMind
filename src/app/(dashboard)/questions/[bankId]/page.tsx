@@ -17,6 +17,8 @@ import {
   X,
   AlertTriangle,
   Loader2,
+  StickyNote,
+  Star,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -85,6 +87,9 @@ export default function QuestionPracticePage() {
   const [noteContent, setNoteContent] = useState("");
   const [noteSaving, setNoteSaving] = useState(false);
   const [noteMsg, setNoteMsg] = useState("");
+  const [noteImportance, setNoteImportance] = useState(0);
+  const [notePanelOpen, setNotePanelOpen] = useState(false);
+  const [hasExistingNote, setHasExistingNote] = useState(false);
   const [favored, setFavored] = useState(false);
   const [favToggling, setFavToggling] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
@@ -138,6 +143,12 @@ export default function QuestionPracticePage() {
   const progress = questions.length > 0 ? ((currentIndex + 1) / questions.length) * 100 : 0;
   const answeredCount = allResults.length;
 
+  useEffect(() => {
+    if (currentQuestion) {
+      fetchExistingNote(currentQuestion.id);
+    }
+  }, [currentQuestion?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const resetAnswerState = () => {
     setSelectedOption("");
     setSelectedOptions([]);
@@ -148,9 +159,34 @@ export default function QuestionPracticePage() {
     setResult(null);
     setAiResult("");
     setFavored(false);
-    setNoteContent("");
     setNoteMsg("");
   };
+
+  const fetchExistingNote = useCallback(async (questionId: string) => {
+    const token = localStorage.getItem("novamind_token");
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/questions/notes?questionId=${questionId}&limit=1`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.data && data.data.length > 0) {
+          const note = data.data[0];
+          setNoteContent(note.content);
+          setNoteImportance(note.importance);
+          setHasExistingNote(true);
+          setNotePanelOpen(true);
+        } else {
+          setNoteContent("");
+          setNoteImportance(0);
+          setHasExistingNote(false);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const goToQuestion = (index: number) => {
     if (index < 0 || index >= questions.length) return;
@@ -274,10 +310,12 @@ export default function QuestionPracticePage() {
         body: JSON.stringify({
           questionId: currentQuestion.id,
           content: noteContent.trim(),
+          importance: noteImportance,
         }),
       });
       if (res.ok) {
         setNoteMsg("笔记已保存");
+        setHasExistingNote(true);
       } else {
         setNoteMsg("保存失败");
       }
@@ -800,6 +838,14 @@ export default function QuestionPracticePage() {
             <Shuffle className="mr-1 h-4 w-4" />
             生成相似题
           </Button>
+          <Button
+            variant={hasExistingNote ? "default" : "outline"}
+            size="sm"
+            onClick={() => setNotePanelOpen(!notePanelOpen)}
+          >
+            <StickyNote className="mr-1 h-4 w-4" />
+            {notePanelOpen ? "隐藏笔记" : hasExistingNote ? "查看笔记" : "添加笔记"}
+          </Button>
         </div>
 
         {aiLoading && (
@@ -807,6 +853,59 @@ export default function QuestionPracticePage() {
             <span className="animate-spin h-4 w-4 border-2 border-primary border-t-transparent rounded-full" />
             AI 思考中...
           </div>
+        )}
+
+        {notePanelOpen && (
+          <>
+            <Separator />
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="note" className="text-base font-medium">
+                  {hasExistingNote ? "编辑笔记" : "添加笔记"}
+                </Label>
+                <div className="flex items-center gap-1">
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <button
+                      key={star}
+                      type="button"
+                      className={cn(
+                        "h-5 w-5 transition-colors",
+                        star <= noteImportance
+                          ? "text-yellow-500"
+                          : "text-muted-foreground/30"
+                      )}
+                      onClick={() => setNoteImportance(star === noteImportance ? 0 : star)}
+                    >
+                      <Star
+                        className="h-5 w-5"
+                        fill={star <= noteImportance ? "currentColor" : "none"}
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <Textarea
+                id="note"
+                value={noteContent}
+                onChange={(e) => setNoteContent(e.target.value)}
+                placeholder="为这道题添加笔记..."
+                rows={4}
+              />
+              <div className="flex items-center gap-2">
+                <Button size="sm" onClick={handleSaveNote} disabled={noteSaving || !noteContent.trim()}>
+                  {noteSaving ? "保存中..." : "保存笔记"}
+                </Button>
+                {noteMsg && (
+                  <span className={cn(
+                    "text-xs",
+                    noteMsg === "笔记已保存" ? "text-green-600" : "text-red-600"
+                  )}>
+                    {noteMsg}
+                  </span>
+                )}
+              </div>
+            </div>
+          </>
         )}
 
         <Separator />
@@ -832,26 +931,6 @@ export default function QuestionPracticePage() {
             下一题
             <ChevronRight className="ml-2 h-4 w-4" />
           </Button>
-        </div>
-
-        <Separator />
-
-        {/* Notes */}
-        <div className="space-y-2">
-          <Label htmlFor="note">笔记</Label>
-          <Textarea
-            id="note"
-            value={noteContent}
-            onChange={(e) => setNoteContent(e.target.value)}
-            placeholder="为这道题添加笔记..."
-            rows={3}
-          />
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" onClick={handleSaveNote} disabled={noteSaving || !noteContent.trim()}>
-              {noteSaving ? "保存中..." : "保存笔记"}
-            </Button>
-            {noteMsg && <span className="text-xs text-muted-foreground">{noteMsg}</span>}
-          </div>
         </div>
       </div>
 

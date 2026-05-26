@@ -126,66 +126,110 @@ async function generateExcelTemplate() {
   return Buffer.from(buffer);
 }
 
-function generateWordTemplate(): string {
+const WML_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+function xmlEscape(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function wmlParagraph(text: string, opts?: { bold?: boolean }): string {
+  const rPrParts: string[] = [];
+  if (opts?.bold) rPrParts.push(`<w:b/>`);
+  const rPr = rPrParts.length > 0 ? `<w:rPr>${rPrParts.join("")}</w:rPr>` : "";
+  return `<w:p><w:r>${rPr}<w:t xml:space="preserve">${xmlEscape(text)}</w:t></w:r></w:p>`;
+}
+
+function wmlEmptyParagraph(): string {
+  return `<w:p></w:p>`;
+}
+
+async function generateWordTemplate(): Promise<Buffer> {
   const typeLabels: Record<string, string> = {
     single: "单选题", multiple: "多选题", truefalse: "判断题",
     fillblank: "填空题", cloze: "完形填空",
   };
 
-  let body = "";
+  const paragraphs: string[] = [];
+
+  // Title
+  paragraphs.push(wmlParagraph("NovaMind 题库上传模板", { bold: true }));
+  paragraphs.push(wmlEmptyParagraph());
+
+  // Usage instructions
+  paragraphs.push(wmlParagraph("使用说明", { bold: true }));
+  paragraphs.push(wmlParagraph("按照下面的格式编辑您的题目，每道题之间用空行分隔。"));
+  paragraphs.push(wmlEmptyParagraph());
+
+  // Format requirements
+  paragraphs.push(wmlParagraph("格式要求", { bold: true }));
+  paragraphs.push(wmlParagraph("1. 每道题以「数字. 」或「数字、」开头，后面跟题目内容。"));
+  paragraphs.push(wmlParagraph("2. 单选题/多选题选项格式：A. 选项内容，每个选项单独一行。"));
+  paragraphs.push(wmlParagraph("3. 答案格式：答案：A （多选用逗号分隔，如 答案：A,B,D）。"));
+  paragraphs.push(wmlParagraph("4. 解析格式：解析：解析内容。"));
+  paragraphs.push(wmlParagraph("5. 题目之间用空行分隔。"));
+  paragraphs.push(wmlParagraph("6. 判断题答案填 true 或 false。"));
+  paragraphs.push(wmlParagraph("7. 完形填空格式：题目内容中使用 __1__、__2__ 标记空白处；每个空白的选项格式为 1. A. 选项1|B. 选项2|C. 选项3|D. 选项4；答案格式如 答案：B,C,A。"));
+  paragraphs.push(wmlEmptyParagraph());
+
+  // Example questions section header
+  paragraphs.push(wmlParagraph("示例题目（请替换为您的题目）", { bold: true }));
+  paragraphs.push(wmlEmptyParagraph());
+
   SAMPLE_QUESTIONS.forEach((q, i) => {
-    body += `
-      <div style="margin-bottom:24px; padding:12px; border:1px solid #ddd; border-radius:8px;">
-        <h3 style="color:#2563eb; margin:0 0 8px;">${i + 1}. [${typeLabels[q.type] || q.type}] ${escapeHtml(q.content)}</h3>
-        ${q.options.length > 0 ? `
-        <div style="margin-left:16px; margin-bottom:8px;">
-          ${q.options.map((o) => `<p style="margin:4px 0;"><strong>${o.key}.</strong> ${escapeHtml(o.value)}</p>`).join("")}
-        </div>` : ""}
-        <p style="margin:4px 0;"><strong style="color:#16a34a;">答案：</strong>${escapeHtml(q.answer)}</p>
-        ${q.analysis ? `<p style="margin:4px 0;"><strong>解析：</strong>${escapeHtml(q.analysis)}</p>` : ""}
-      </div>`;
+    const prefix = `${i + 1}. [${typeLabels[q.type] || q.type}] `;
+    paragraphs.push(wmlParagraph(prefix + q.content, { bold: true }));
+
+    q.options.forEach((o) => {
+      paragraphs.push(wmlParagraph(`${o.key}. ${o.value}`));
+    });
+
+    paragraphs.push(wmlParagraph(`答案：${q.answer}`));
+
+    if (q.analysis) {
+      paragraphs.push(wmlParagraph(`解析：${q.analysis}`));
+    }
+
+    // Empty paragraph as separator between questions
+    paragraphs.push(wmlEmptyParagraph());
   });
 
-  return `
-    <html xmlns:o="urn:schemas-microsoft-com:office:office"
-          xmlns:w="urn:schemas-microsoft-com:office:word"
-          xmlns="http://www.w3.org/TR/REC-html40">
-    <head>
-      <meta charset="utf-8">
-      <title>NovaMind 题库模板</title>
-      <style>
-        body { font-family: "Microsoft YaHei", "微软雅黑", sans-serif; padding: 20px; line-height: 1.8; }
-        h2 { color: #1e40af; border-bottom: 2px solid #2563eb; padding-bottom: 8px; }
-        .tip { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 8px 12px; margin: 12px 0; font-size: 14px; }
-        .note { background: #f0f9ff; border-left: 4px solid #3b82f6; padding: 8px 12px; margin: 12px 0; font-size: 14px; }
-      </style>
-    </head>
-    <body>
-      <h2>NovaMind 题库上传模板</h2>
-      <div class="tip"><strong>使用说明：</strong>将此文件内容复制到 Word 中，按照下面的格式编辑您的题目。每道题之间用空行分隔。</div>
-      <div class="note">
-        <strong>格式要求：</strong><br/>
-        1. 每道题以 "数字. " 开头，后面跟题目内容<br/>
-        2. 单选题/多选题选项格式：A. 选项内容<br/>
-        3. 答案格式：答案：A（多选用逗号分隔：答案：A,B,D）<br/>
-        4. 解析格式：解析：解析内容<br/>
-        5. 题目之间用空行分隔<br/>
-        6. <strong>完形填空格式：</strong><br/>
-           &nbsp;&nbsp;- 题目内容中使用 __1__、__2__ 标记每个空白处<br/>
-           &nbsp;&nbsp;- 每个空白的选项格式：1. A. 选项1|B. 选项2|C. 选项3|D. 选项4<br/>
-           &nbsp;&nbsp;- 答案格式：答案：B,C,A（每个空白的答案按顺序用逗号分隔）
-      </div>
-      ${body}
-    </body>
-    </html>`;
-}
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="${WML_NS}">
+  <w:body>
+${paragraphs.join("\n")}
+  </w:body>
+</w:document>`;
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`;
+
+  const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+
+  const docRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>`;
+
+  const JSZipModule = await import("jszip");
+  const JSZip = (JSZipModule as any).default || JSZipModule;
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", contentTypesXml);
+  zip.file("_rels/.rels", relsXml);
+  zip.file("word/document.xml", documentXml);
+  zip.file("word/_rels/document.xml.rels", docRelsXml);
+
+  const zipBuffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+  return zipBuffer;
 }
 
 export async function GET(req: NextRequest) {
@@ -204,12 +248,11 @@ export async function GET(req: NextRequest) {
     }
 
     case "word": {
-      const html = generateWordTemplate();
-      const buf = Buffer.from(html, "utf-8");
-      return new NextResponse(buf, {
+      const buffer = await generateWordTemplate();
+      return new NextResponse(buffer as any, {
         headers: {
-          "Content-Type": "application/msword",
-          "Content-Disposition": 'attachment; filename="novamind-template.doc"',
+          "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "Content-Disposition": 'attachment; filename="novamind-template.docx"',
         },
       });
     }

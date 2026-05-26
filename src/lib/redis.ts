@@ -3,18 +3,31 @@ import Redis from "ioredis";
 const globalForRedis = globalThis as unknown as { redis: Redis | undefined };
 
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
+const isProd = process.env.NODE_ENV === "production";
 
 export const redis = globalForRedis.redis || new Redis(REDIS_URL, {
+  connectTimeout: 5000,
+  commandTimeout: 5000,
+  keepAlive: 30000,
   retryStrategy(times) {
-    if (times > 10) return null;
-    return Math.min(times * 200, 2000);
+    if (times > 5) return null;
+    return Math.min(times * 150, 1500);
   },
-  maxRetriesPerRequest: 3,
-  enableOfflineQueue: false,
+  maxRetriesPerRequest: isProd ? 2 : 3,
+  enableOfflineQueue: true,
+  enableReadyCheck: true,
+  maxLoadingRetryTime: 3000,
   lazyConnect: false,
+  reconnectOnError(err) {
+    const targetError = "READONLY";
+    if (err.message.includes(targetError)) {
+      return true;
+    }
+    return false;
+  },
 });
 
-if (process.env.NODE_ENV !== "production") {
+if (!isProd) {
   globalForRedis.redis = redis;
 }
 
@@ -63,24 +76,25 @@ export async function deleteFromCache(key: string): Promise<void> {
 export async function invalidatePattern(pattern: string): Promise<void> {
   try {
     let cursor = "0";
-    const keysToDelete: string[] = [];
+    const pipeline = redis.pipeline();
+    let keyCount = 0;
     do {
       const [nextCursor, keys] = await redis.scan(
         cursor,
         "MATCH",
         pattern,
         "COUNT",
-        100
+        200
       );
       cursor = nextCursor;
-      keysToDelete.push(...keys);
+      for (const key of keys) {
+        pipeline.unlink(key);
+        keyCount++;
+      }
     } while (cursor !== "0");
 
-    if (keysToDelete.length > 0) {
-      const batchSize = 100;
-      for (let i = 0; i < keysToDelete.length; i += batchSize) {
-        await redis.del(...keysToDelete.slice(i, i + batchSize));
-      }
+    if (keyCount > 0) {
+      await pipeline.exec();
     }
   } catch (err) {
     console.error("Cache invalidate error:", err);

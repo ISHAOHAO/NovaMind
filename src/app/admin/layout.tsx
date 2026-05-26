@@ -22,6 +22,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { LoadingScreen } from "@/components/ui/loading-screen";
 
 interface UserInfo {
   id: string;
@@ -95,7 +96,7 @@ export default function AdminLayout({
     router.replace("/login");
   };
 
-  if (!mounted) return null;
+  if (!mounted) return <LoadingScreen message="加载管理后台..." />;
 
   return (
     <div className="flex h-screen overflow-hidden">

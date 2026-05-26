@@ -20,6 +20,7 @@ import {
   Code2,
   Sparkles,
 } from "lucide-react"
+import { LoadingScreen } from "@/components/ui/loading-screen"
 
 const features = [
   {
@@ -67,7 +68,7 @@ export default function HomePage() {
   }, [router])
 
   if (!mounted) {
-    return null
+    return <LoadingScreen message="正在准备..." />
   }
 
   return (

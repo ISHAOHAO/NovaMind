@@ -25,7 +25,7 @@
 - 用户反馈系统（提交题目问题反馈，管理员处理）
 - 学习分析看板（数据统计 + AI 薄弱点识别 + 时间趋势）
 - 模拟考试模式（试卷生成 + 定时 + 评分 + 排名）
-- 笔记系统（重要性标记 + AI 总结 + 搜索导出）
+- 笔记系统（重要性标记 + AI 总结 + 搜索导出 + 内联编辑 + 刷题时边答边记）
 - 用户激活码管理
 - 完整的审计日志系统
 - **IP 登录风控系统**（登录尝试记录、风险评级、可视化看板、IP 封禁/解封）
@@ -94,8 +94,10 @@
 ```
 /api/notes/
 ├── ai-summary          [POST]      - AI 总结笔记关键知识点（需 AI 限额）
-└── export              [GET]       - 导出笔记（Markdown/PDF）
+└── export              [GET]       - 导出笔记（Markdown 下载）
 ```
+
+**前端**: 笔记管理页支持内联编辑（铅笔图标进入编辑模式），刷题页提供折叠式笔记面板（一键展开、自动加载已有笔记、边刷题边编辑内容及重要性评分）
 
 #### 📋 模拟考试模块 (4 个) 
 ```
@@ -145,7 +147,7 @@
 
 ---
 
-## 2️⃣ UI 组件库 (28 个)
+## 2️⃣ UI 组件库 (29 个)
 
 **位置**: `src/components/ui/`
 
@@ -189,6 +191,7 @@
 | `progress.tsx` | 进度条 | 进度显示 |
 | `scroll-area.tsx` | 滚动区域 | 可滚动容器 |
 | `skeleton.tsx` | 骨架屏 | 加载状态 |
+| `loading-screen.tsx` | 加载屏幕 | 全屏加载动画（Brain 浮动 + 脉冲光环 + 渐变进度条）/ 区域加载覆盖层 / 页面加载 |
 | `toast.tsx` + `toaster.tsx` | 提示 | 消息提示 |
 
 ### 工具函数
@@ -255,15 +258,19 @@ ai_upload_analyze_monthly_limit // 上传分析 (默认 10 次/月)
 
 #### 🌍 `redis.ts` - Redis 缓存层
 - 即连模式（`lazyConnect: false`），避免冷启动延迟
-- SCAN + 批量 DEL 实现非阻塞缓存失效（替代 KEYS 命令）
-- Key-Value 存储
-- 过期时间设置
-- 模式匹配失效
+- TCP Keep-Alive 30s（`keepAlive: 30000`），保持长连接
+- 连接超时 5s（`connectTimeout: 5000`） + 命令超时 5s（`commandTimeout: 5000`）
+- 重试策略：最多 5 次，间隔 150ms~1500ms
+- 离线队列开启（`enableOfflineQueue: true`），命令在连接就绪前排队等待
+- `reconnectOnError` 处理 READONLY 故障转移
+- **Pipeline + UNLINK** 非阻塞批量缓存失效（替代 SCAN + 逐个 DEL）
 
 #### 🔗 `prisma.ts` - ORM 实例
 - 单例 Prisma 连接
 - 全局可访问
-- 自动连接管理
+- 生产环境仅记录 `error` / `warn` 日志（避免查询日志 IO 开销）
+- 开发环境额外输出 `query` 日志便于调试
+- 连接池 `connection_limit=15` + `pool_timeout=10s`
 
 #### ⚙️ `config.ts` - 系统配置
 - 动态配置获取 (`getSystemConfig()`)
@@ -334,7 +341,7 @@ src/app/
 │   ├── profile/page.tsx             # 用户资料页
 │   ├── analytics/page.tsx           # 学习分析看板 
 │   ├── questions/page.tsx           # 题库列表页
-│   ├── questions/[bankId]/page.tsx  # 题库详情/练习页
+│   ├── questions/[bankId]/page.tsx  # 题库详情/练习页（含笔记面板/AI辅助）
 │   ├── notes/page.tsx               # 笔记管理 
 │   ├── exams/page.tsx               # 模拟考试列表 
 │   └── exams/[examId]/page.tsx      # 考试答题页 
@@ -371,17 +378,17 @@ src/app/
 | `/login` | 用户登录 | 需验证邮箱 |
 | `/register` | 用户注册 | 验证激活码 |
 | `/verify-email` | 邮件验证 | 在线等待 |
-| `/dashboard` | 主仪表板 | 需认证 |
+| `/dashboard` | 主仪表板（快捷入口: 刷题/错题/上传/笔记/学习分析） | 需认证 |
 | `/analytics` | 学习分析看板 | 需认证 |
 | `/profile` | 用户资料 | 需认证 |
 | `/questions` | 题库列表 | 需认证 |
-| `/notes` | 笔记管理 | 需认证 |
+| `/notes` | 笔记管理（全部/高重要/AI 筛选，内联编辑，AI 总结，导出） | 需认证 |
 | `/exams` | 模拟考试 | 需认证 |
 | `/admin/*` | 管理员功能 | 需管理员权限 |
 
 ### 路由组特点
 - `(auth)` - 无导航栏的认证布局
-- `(dashboard)` - 有导航栏的用户布局
+- `(dashboard)` - 有导航栏的用户布局（侧边栏: 首页/题库/模拟考试/笔记/学习分析/个人中心 + 管理员可见管理后台）
 - `admin/*` - 管理员专用布局
 - 使用 Next.js 13+ 的路由组特性隔离视图
 
@@ -804,7 +811,7 @@ User                    # 用户表
 ├── UserSession        # 用户会话
 ├── ActivationCode     # 激活码
 ├── Favorite           # 收藏
-├── Note              # 笔记（含重要性标记 / AI 生成标识）
+├── Note              # 笔记（含重要性标记 / AI 生成标识 / 题目关联）
 └── Exam              # 模拟考试 
 
 QuestionBank           # 题库表
@@ -863,7 +870,7 @@ RateLimit             # 数据库限流计数器
 ### 前端栈
 - **框架**: Next.js 15 (App Router)
 - **语言**: TypeScript
-- **样式**: Tailwind CSS + PostCSS
+- **样式**: Tailwind CSS + PostCSS（`tailwindcss-animate` ESM import）
 - **UI 库**: Radix UI (25 个组件)
 - **表单**: React Hook Form + Zod
 - **状态**: Zustand
@@ -897,7 +904,10 @@ RateLimit             # 数据库限流计数器
 
 ### 2️⃣ 题目练习流程
 ```
-选择题库 → 选择模式 → 开始练习 → 回答题目 → 记录成绩 → 查看分析
+选择题库 → 选择模式 → 开始练习 → 回答题目 → 查看分析
+                                   ├── 查看/编辑笔记（折叠面板，自动加载已有笔记）
+                                   ├── AI 解析 / AI 讲解 / 生成相似题
+                                   └── 收藏 / 反馈题目
 ```
 
 ### 3️⃣ AI 功能流程
@@ -907,8 +917,21 @@ RateLimit             # 数据库限流计数器
 
 ### 4️⃣ 题库上传审核流程
 ```
-用户上传 → AI 上传分析（格式/质量检查） → AI 初审 → 管理员复审（含 AI 审核分析） → 审核通过/拒绝 → 发布/存档
+用户下载模板 → 编辑题目 → 上传文件 → 自动解析（5 种题型 + 图片提取） → AI 格式检查 → 预览确认 → 导入题库
 ```
+
+**模板生成** (`/api/questions/template`):
+- Word 模板：使用 JSZip + 手写 OOXML 生成标准 `.docx`，每道题之间用独立段落分隔
+- 支持五种题型示例：单选、多选、判断、填空、完形填空
+- 同时提供 JSON 和 Excel 格式模板
+
+**上传解析** (`/api/questions/upload`)：
+- 使用 mammoth 将 `.docx` 转换为 HTML，再提取纯文本
+- 智能题目分块：先按空行分割，再按编号模式（`\d+[.、)）]` / `第\d+题` / `Q\d+:` 等）二次分割
+- 避免将完形填空选项行（如 `1. A. xxx|B. yyy`）误判为题目边界
+- 自动检测题型：true/false 答案 → 判断题、`__1__` 标记 → 完形填空、下划线/括号 → 填空题、逗号分隔答案 → 多选题
+- 支持图片提取（Base64 Data URI）
+- 旧版 `.doc` 回退：二进制文本提取（UTF-16LE / Latin-1）
 
 ---
 
@@ -956,14 +979,26 @@ RateLimit             # 数据库限流计数器
 
 4. **Redis 优化**
    - 即连模式（`lazyConnect: false`），消除首次 API 调用时的 3-4s 冷启动延迟
-   - 缓存失效使用 `SCAN` + 批量 `DEL` 替代 `KEYS`，避免阻塞
-   - 离线队列关闭（`enableOfflineQueue: false`），避免积压请求
+   - TCP Keep-Alive 30s（`keepAlive: 30000`），保持长连接，减少 TCP 握手开销
+   - 连接超时 5s（`connectTimeout: 5000`）+ 命令超时 5s（`commandTimeout: 5000`）
+   - 重试策略：最多 5 次，间隔 150ms~1500ms（生产环境 maxRetriesPerRequest=2）
+   - 离线队列开启（`enableOfflineQueue: true`），命令在连接就绪前排队，防止竞态报错
+   - `reconnectOnError` 处理 READONLY 故障转移
+   - 缓存失效使用 `Pipeline` + `UNLINK` 非阻塞批量删除，替代 `SCAN` + 逐个 `DEL`
+   - 容器端：`--tcp-keepalive 60`、`--tcp-backlog 511`、`--save ""`（仅 AOF，避免 RDB 双重写入）、`--databases 1`
+   - Prisma 连接池 `connection_limit=15` + `pool_timeout=10s`
+   - PostgreSQL: `shared_buffers=256MB`、`effective_cache_size=768MB`、`random_page_cost=1.1`（SSD）、`effective_io_concurrency=200`
 
 5. **前端优化**
+   - 根布局 `<Suspense>` 包裹 + `LoadingScreen` 全屏加载动画（Brain 图标浮动 + 脉冲光环 + 渐变进度条 + 跳动圆点指示器）
    - 所有页面路由配有 `loading.tsx` 骨架屏（SSR 流式加载），包括管理员所有页面和用户仪表板
+   - 仪表板/管理后台 `mounted` 检查时展示 `LoadingScreen` 替代 `return null` 空白闪烁
+   - `LoadingOverlay` 组件支持区域级半透明加载覆盖（带模糊背景）
+   - 邮箱验证页 Suspense 回退升级为 `PageLoading`
    - React Query 状态管理（5min gcTime / 30s staleTime）
    - API 分页查询支持
    - 速率限制设置（Redis 滑动窗口算法）
+   - 自定义 CSS 动画：`float`、`ping-slow`、`spin-slow`、`bounce-dot`（Tailwind 注册）
 
 ---
 
@@ -1038,7 +1073,7 @@ RateLimit             # 数据库限流计数器
 | AI 功能 | ✅ 100% | 可配置多个 AI 提供商，分维度限流 |
 | 学习分析 | ✅ 100% | 统计看板、AI 薄弱点、时间趋势、错题库 |
 | 模拟考试 | ✅ 100% | 试卷生成、定时考试、评分排名 |
-| 笔记系统 | ✅ 100% | 重要性标记、AI 总结、搜索导出 |
+| 笔记系统 | ✅ 100% | 重要性标记、AI 总结、搜索导出、内联编辑、刷题时边答边记 |
 | 管理后台 | ✅ 100% | 完整的数据管理界面 |
 | 登录风控 | ✅ 100% | IP 风险评级、登录记录、封禁管理、可视化看板 |
 | 审核工作流 | ✅ 100% | 5 种状态流转、绩效统计 |
@@ -1061,8 +1096,9 @@ RateLimit             # 数据库限流计数器
 🤖 **AI 集成能力** - 支持 14 个 AI 提供商、题目评估和生成、分维度限流  
 📊 **数据驱动** - 学习分析看板、时间趋势图表、知识点覆盖率  
 📝 **模拟考试** - 试卷生成、定时考试、自动批改、成绩排名  
-📦 **企业级特性** - Redis 多级缓存、速率限制、错误处理、日志记录  
-🎨 **现代 UI/UX** - Radix UI + Tailwind CSS + Recharts、响应式设计、骨架屏加载  
+📦 **企业级特性** - Redis 多级缓存、Pipeline+UNLINK 非阻塞失效、速率限制、错误处理、日志记录  
+🎨 **现代 UI/UX** - Radix UI + Tailwind CSS + Recharts、响应式设计、优雅全屏加载动画（浮动图标 + 脉冲光环 + 渐变进度条）、骨架屏流式加载  
+⚡ **极致加载体验** - Redis Keep-Alive 长连接、Pipeline 批量操作、PostgreSQL SSD 优化、连接池调优、全局 `<Suspense>` 加载屏幕、路由级骨架屏
 
 该项目可用于教育机构、在线考试平台或企业培训系统，具有良好的可扩展性和维护性。
 

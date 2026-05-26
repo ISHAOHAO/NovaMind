@@ -14,6 +14,8 @@ import {
   ChevronDown,
   Brain,
   Timer,
+  StickyNote,
+  BarChart3,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,6 +28,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
+import { LoadingScreen } from "@/components/ui/loading-screen";
 
 interface UserInfo {
   id: string;
@@ -77,7 +80,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
     router.replace("/login");
   }, [router]);
 
-  if (!mounted) return null;
+  if (!mounted) return <LoadingScreen message="加载中..." />;
 
   const isAdmin = user?.role === "ADMIN" || user?.role === "SUPER_ADMIN";
 
@@ -85,6 +88,8 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
     { href: "/dashboard", label: "首页", icon: Home },
     { href: "/questions", label: "题库", icon: BookOpen },
     { href: "/exams", label: "模拟考试", icon: Timer },
+    { href: "/notes", label: "笔记", icon: StickyNote },
+    { href: "/analytics", label: "学习分析", icon: BarChart3 },
     { href: "/profile", label: "个人中心", icon: User },
   ];
 
@@ -192,6 +197,15 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuLabel>我的账号</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => router.push("/notes")}>
+                <StickyNote className="mr-2 h-4 w-4" />
+                我的笔记
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => router.push("/analytics")}>
+                <BarChart3 className="mr-2 h-4 w-4" />
+                学习分析
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => router.push("/profile")}>
                 <User className="mr-2 h-4 w-4" />

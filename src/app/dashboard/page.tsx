@@ -12,6 +12,8 @@ import {
   CalendarDays,
   TrendingUp,
   Clock,
+  StickyNote,
+  BarChart3,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -108,6 +110,8 @@ export default function DashboardPage() {
     { label: "开始刷题", icon: Play, href: "/questions", variant: "default" as const },
     { label: "查看错题", icon: AlertTriangle, href: "/questions?filter=wrong", variant: "outline" as const },
     { label: "上传题库", icon: Upload, href: "/questions/upload", variant: "outline" as const },
+    { label: "学习笔记", icon: StickyNote, href: "/notes", variant: "outline" as const },
+    { label: "学习分析", icon: BarChart3, href: "/analytics", variant: "outline" as const },
   ];
 
   function formatRelativeTime(dateStr: string): string {

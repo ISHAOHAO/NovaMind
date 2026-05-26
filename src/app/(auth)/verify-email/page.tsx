@@ -16,6 +16,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Code2, Loader2 } from "lucide-react"
+import { PageLoading } from "@/components/ui/loading-screen"
 
 function VerifyEmailForm() {
   const router = useRouter()
@@ -149,7 +150,7 @@ function VerifyEmailForm() {
 
 export default function VerifyEmailPage() {
   return (
-    <Suspense fallback={<div className="flex items-center justify-center min-h-[200px]"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>}>
+    <Suspense fallback={<PageLoading />}>
       <VerifyEmailForm />
     </Suspense>
   )

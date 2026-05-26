@@ -60,7 +60,15 @@ services:
     image: redis:7-alpine
     container_name: novamind-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --tcp-keepalive 60
+      --tcp-backlog 511
+      --save ""
+      --databases 1
     volumes:
       - redis_data:/data
     healthcheck:
@@ -68,6 +76,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
     networks:
       - novamind-network
 
@@ -78,7 +87,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - DATABASE_URL=postgresql://novamind:novamind_password@postgres:5432/novamind?schema=public&connection_limit=20
+      - DATABASE_URL=postgresql://novamind:novamind_password@postgres:5432/novamind?schema=public&connection_limit=15&pool_timeout=10
       - REDIS_URL=redis://redis:6379
       - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
       - NODE_ENV=production
@@ -276,8 +285,9 @@ docker exec -i novamind-postgres psql -U novamind novamind < backup.sql
 - **薄弱知识点识别**：AI 分析错题聚类，识别薄弱知识点并提供学习建议
 - **时间趋势图表**：日/周/月学习趋势可视化（柱状图）
 - **错题库**：分类筛选错题、查看答题详情、知识点覆盖率分析
-- **笔记系统**：按题目记笔记、标记重要性（1-5星）、AI 智能总结关键知识点
+- **笔记系统**：按题目记笔记、标记重要性（1-5星）、AI 智能总结关键知识点、内联编辑笔记内容
 - **笔记导出**：支持 Markdown 格式导出，可搜索和组织笔记
+- **刷题时记笔记**：练习页面一键展开笔记面板，自动加载已有笔记，边刷题边编辑
 
 ### 模拟考试
 - **试卷生成**：从题库随机抽题或 AI 按主题自动生成试卷
@@ -321,7 +331,7 @@ docker exec -i novamind-postgres psql -U novamind novamind < backup.sql
 | 缓存 | Redis 7 (ioredis) — 全路由覆盖 |
 | 认证 | JWT + bcryptjs |
 | 实时通信 | WebSocket (ws) |
-| 文件解析 | mammoth (Word .docx/.doc) + xlsx (Excel .xlsx/.xls) + sharp (图片压缩) |
+| 文件解析 | mammoth (Word .docx) + xlsx (Excel .xlsx/.xls) + jszip (模板生成) + sharp (图片压缩) |
 | 邮件 | Nodemailer |
 | 部署 | Docker + Docker Compose |
 
@@ -339,7 +349,23 @@ docker exec -i novamind-postgres psql -U novamind novamind < backup.sql
 | 用户仪表板 | 15s | `/api/dashboard` |
 | 系统配置 | 300s | `/api/admin/settings` |
 
-缓存失效使用 SCAN + 批量 DEL，非阻塞模式匹配清除。数据库连接池 20 连接，支撑高并发查询。
+### Redis 连接优化
+- TCP Keep-Alive (30s) 保持长连接，避免频繁握手
+- 连接超时 5s、命令超时 5s，防止阻塞
+- 缓存失效使用 Pipeline + `UNLINK` 非阻塞删除，批量执行
+- 容器端 `--tcp-keepalive 60` + `--tcp-backlog 511` + `--save ""`（仅 AOF）
+
+### PostgreSQL 优化
+- `shared_buffers=256MB` + `effective_cache_size=768MB`
+- `random_page_cost=1.1`（SSD 优化）+ `effective_io_concurrency=200`
+- Prisma 连接池 `connection_limit=15` + `pool_timeout=10s`
+- 18 个模型，40+ 索引覆盖所有高频查询列和复合条件
+
+### 前端加载优化
+- 全路由 `loading.tsx` 骨架屏（SSR 流式加载）
+- 根布局 `<Suspense>` + 优雅全屏加载动画（Brain 图标浮动 + 脉冲光环 + 渐变进度条）
+- 仪表板/管理后台认证检查时展示 LoadingScreen 替代空白闪烁
+- React Query 双级缓存（5min gcTime / 30s staleTime）
 
 ---
 
