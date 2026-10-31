@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket, RawData } from "ws";
 import { randomUUID } from "crypto";
 import { redis } from "@/lib/redis";
 import { prisma } from "@/lib/prisma";
-import { verifyToken } from "@/lib/auth";
+import { validateTokenWithSession } from "@/lib/auth";
 import { getSystemConfig } from "@/lib/config";
 
 const AUTH_TIMEOUT = 10000;
@@ -85,7 +85,8 @@ export function startWebSocketServer(port: number): WebSocketServer {
             return;
           }
 
-          const payload = verifyToken(token);
+          // 与 HTTP 接口一致：校验令牌签名、黑名单与会话状态
+          const payload = await validateTokenWithSession(token);
           if (!payload) {
             ws.send(JSON.stringify({ type: "auth_error", message: "令牌无效或已过期" }));
             ws.close(4001, "令牌无效");

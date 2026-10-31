@@ -11,13 +11,39 @@ export async function GET(req: NextRequest, context: RouteContext) {
   try {
     const { bankId } = await context.params;
 
-    const cacheKey = `questions:bank:${bankId}`;
-    const cached = await getFromCache<any>(cacheKey);
-    if (cached) {
-      return Response.json(cached);
+    const user = await authenticateRequest(req);
+
+    const bankMeta = await prisma.questionBank.findUnique({
+      where: { id: bankId },
+      select: { id: true, isPublic: true, status: true, uploaderId: true },
+    });
+    if (!bankMeta) {
+      return Response.json({ error: "题库不存在" }, { status: 404 });
     }
 
-    const user = await authenticateRequest(req);
+    const isPublicBank = bankMeta.isPublic && bankMeta.status === "APPROVED";
+    if (!isPublicBank) {
+      // 私有/未过审题库仅上传者和管理员可见
+      if (!user) {
+        return Response.json({ error: "该题库未公开" }, { status: 403 });
+      }
+      if (
+        bankMeta.uploaderId !== user.userId &&
+        user.role !== "ADMIN" &&
+        user.role !== "SUPER_ADMIN"
+      ) {
+        return Response.json({ error: "您没有权限查看该题库" }, { status: 403 });
+      }
+    }
+
+    // 缓存必须在鉴权通过后才能命中/写入，否则私密题库内容会经缓存泄露给匿名用户
+    const cacheKey = `questions:bank:${bankId}`;
+    if (isPublicBank) {
+      const cached = await getFromCache<any>(cacheKey);
+      if (cached) {
+        return Response.json(cached);
+      }
+    }
 
     const bank = await prisma.questionBank.findUnique({
       where: { id: bankId },
@@ -44,15 +70,6 @@ export async function GET(req: NextRequest, context: RouteContext) {
       return Response.json({ error: "题库不存在" }, { status: 404 });
     }
 
-    if (!bank.isPublic || bank.status !== "APPROVED") {
-      if (!user) {
-        return Response.json({ error: "该题库未公开" }, { status: 403 });
-      }
-      if (bank.uploaderId !== user.userId && user.role !== "ADMIN" && user.role !== "SUPER_ADMIN") {
-        return Response.json({ error: "您没有权限查看该题库" }, { status: 403 });
-      }
-    }
-
     const result = {
       data: {
         id: bank.id,
@@ -73,7 +90,9 @@ export async function GET(req: NextRequest, context: RouteContext) {
       },
     };
 
-    await setToCache(cacheKey, result, 300);
+    if (isPublicBank) {
+      await setToCache(cacheKey, result, 300);
+    }
 
     return Response.json(result);
   } catch (error: any) {

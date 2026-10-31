@@ -3,8 +3,7 @@ import prisma from "@/lib/prisma";
 import redis from "@/lib/redis";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
-
-const JWT_SECRET = process.env.JWT_SECRET || "novamind-jwt-secret-change-in-production";
+import { getJwtSecret } from "@/lib/auth";
 
 interface ResetTokenPayload {
   userId: string;
@@ -37,7 +36,7 @@ export async function POST(request: NextRequest) {
 
     let payload: ResetTokenPayload;
     try {
-      payload = jwt.verify(token, JWT_SECRET) as ResetTokenPayload;
+      payload = jwt.verify(token, getJwtSecret()) as ResetTokenPayload;
     } catch {
       return NextResponse.json(
         { error: "重置链接已过期或无效，请重新申请" },

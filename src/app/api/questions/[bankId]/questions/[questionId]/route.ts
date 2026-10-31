@@ -11,9 +11,28 @@ export async function GET(req: NextRequest, context: RouteContext) {
   try {
     const { bankId, questionId } = await context.params;
 
-    const bank = await prisma.questionBank.findUnique({ where: { id: bankId } });
+    // 题目详情包含答案与解析，必须登录且有权访问所属题库
+    const user = await authenticateRequest(req);
+    if (!user) {
+      return Response.json({ error: "请先登录" }, { status: 401 });
+    }
+
+    const bank = await prisma.questionBank.findUnique({
+      where: { id: bankId },
+      select: { id: true, isPublic: true, status: true, uploaderId: true },
+    });
     if (!bank) {
       return Response.json({ error: "题库不存在" }, { status: 404 });
+    }
+
+    const isPublicBank = bank.isPublic && bank.status === "APPROVED";
+    if (
+      !isPublicBank &&
+      bank.uploaderId !== user.userId &&
+      user.role !== "ADMIN" &&
+      user.role !== "SUPER_ADMIN"
+    ) {
+      return Response.json({ error: "您没有权限查看该题库的题目" }, { status: 403 });
     }
 
     const question = await prisma.question.findFirst({

@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import prisma from "@/lib/prisma";
 import { redis } from "@/lib/redis";
-import { authenticateRequest } from "@/lib/auth";
+import { authenticateRequest, getTokenFromRequest } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,8 +15,8 @@ export async function POST(req: NextRequest) {
       data: { isActive: false },
     });
 
-    const authHeader = req.headers.get("authorization") || "";
-    const token = authHeader.replace(/^Bearer\s+/i, "");
+    // 无论令牌来自 Authorization 头还是 Cookie，都加入黑名单使其立即失效
+    const token = getTokenFromRequest(req);
     if (token) {
       await redis.setex(
         `blacklist:token:${token}`,

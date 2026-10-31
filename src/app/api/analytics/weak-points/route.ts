@@ -4,7 +4,7 @@ import { authenticateRequest } from "@/lib/auth";
 import { getFromCache, setToCache } from "@/lib/redis";
 import { askAi } from "@/lib/ai";
 import { getSystemConfig } from "@/lib/config";
-import { checkAiUsageLimit, incrementAiUsage } from "@/lib/ai-usage";
+import { checkAndIncrementAiUsage, refundAiUsage } from "@/lib/ai-usage";
 
 interface WeakCategory {
   category: string;
@@ -76,7 +76,8 @@ export async function GET(req: NextRequest) {
       return Response.json(data);
     }
 
-    const usageCheck = await checkAiUsageLimit(user.userId);
+    // 原子化“检查+扣减”，防止并发请求绕过每日限额
+    const usageCheck = await checkAndIncrementAiUsage(user.userId);
     if (!usageCheck.allowed) {
       const data = {
         weakPoints: weakCategories.map((c) => ({
@@ -138,6 +139,8 @@ ${categoriesSummary}
         }));
       }
     } else {
+      // AI 调用失败，退还本次额度
+      await refundAiUsage(user.userId);
       aiWeakPoints = weakCategories.map((c) => ({
         category: c.category,
         knowledgeGaps: ["AI 分析暂不可用"],
@@ -145,10 +148,11 @@ ${categoriesSummary}
       }));
     }
 
-    await incrementAiUsage(user.userId);
-
+    // 额度已在调用前原子扣减；AI 失败已退还，用量回显为扣减前的值
     const updatedUsage = {
-      used: usageCheck.used + 1,
+      used: aiResult.success
+        ? usageCheck.used
+        : Math.max(0, usageCheck.used - 1),
       limit: usageCheck.limit,
     };
 

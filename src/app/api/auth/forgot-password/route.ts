@@ -4,8 +4,8 @@ import { rateLimit } from "@/lib/rate-limit";
 import { sendPasswordResetEmail } from "@/lib/email";
 import redis from "@/lib/redis";
 import jwt from "jsonwebtoken";
+import { getJwtSecret } from "@/lib/auth";
 
-const JWT_SECRET = process.env.JWT_SECRET || "novamind-jwt-secret-change-in-production";
 const RESET_TOKEN_EXPIRY = 1800;
 
 export async function POST(request: NextRequest) {
@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
 
     const resetToken = jwt.sign(
       { userId: user.id, email: user.email, purpose: "password_reset" },
-      JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: "30m" }
     );
 

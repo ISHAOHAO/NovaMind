@@ -82,6 +82,12 @@ export const PUT = requireAdmin(async (req: NextRequest, { params }: { params: P
       return Response.json({ error: "用户不存在" }, { status: 404 });
     }
 
+    // 普通管理员不得对超级管理员做任何变更（重置密码、封禁、改角色等），
+    // 否则管理员可重置超管密码实现提权
+    if (existingUser.role === "SUPER_ADMIN" && currentUser.role !== "SUPER_ADMIN") {
+      return Response.json({ error: "仅超级管理员可操作超级管理员账号" }, { status: 403 });
+    }
+
     if (userId === currentUser.userId && body.role && body.role !== existingUser.role) {
       return Response.json({ error: "不能修改自己的角色" }, { status: 400 });
     }

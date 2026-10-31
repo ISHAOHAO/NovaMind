@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import prisma from "@/lib/prisma";
 import { authenticateRequest } from "@/lib/auth";
+import { gradeAnswer, normalizeUserAnswer } from "@/lib/grading";
 import { formatDate, getDifficultyLabel } from "@/lib/utils";
 import { getFromCache, setToCache, deleteFromCache } from "@/lib/redis";
 
@@ -127,7 +128,8 @@ export async function PUT(
     }
 
     const body = await req.json();
-    const { action, questionId, userAnswer, isCorrect } = body;
+    // 注意：不读取客户端提交的 isCorrect，判分一律以服务端结果为准
+    const { action, questionId } = body;
 
     const cacheKey = getExamCacheKey(examId);
     await deleteFromCache(cacheKey);
@@ -159,6 +161,11 @@ export async function PUT(
         return Response.json({ error: "请提供题目ID" }, { status: 400 });
       }
 
+      const userAnswer = normalizeUserAnswer(body.userAnswer);
+      if (body.userAnswer !== undefined && body.userAnswer !== null && userAnswer === null) {
+        return Response.json({ error: "作答内容格式不正确" }, { status: 400 });
+      }
+
       const examQuestion = await prisma.examQuestion.findUnique({
         where: {
           examId_questionId: {
@@ -166,21 +173,31 @@ export async function PUT(
             questionId,
           },
         },
+        include: {
+          question: { select: { id: true, type: true, answer: true } },
+        },
       });
 
       if (!examQuestion) {
         return Response.json({ error: "题目不属于该考试" }, { status: 404 });
       }
 
+      // 服务端依据标准答案判分，不信任客户端结果
+      const isCorrect = gradeAnswer(
+        examQuestion.question.type,
+        examQuestion.question.answer,
+        userAnswer
+      );
+
       await prisma.examQuestion.update({
         where: { id: examQuestion.id },
         data: {
           userAnswer: userAnswer ?? null,
-          isCorrect: isCorrect ?? null,
+          isCorrect,
         },
       });
 
-      return Response.json({ message: "答案已保存" });
+      return Response.json({ message: "答案已保存", isCorrect });
     }
 
     if (action === "complete") {

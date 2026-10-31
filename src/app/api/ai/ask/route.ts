@@ -4,7 +4,7 @@ import { authenticateRequest } from "@/lib/auth";
 import { analyzeQuestion, explainAnswer, generateSimilarQuestion } from "@/lib/ai";
 import { askAiSchema } from "@/lib/validations";
 import { getSystemConfig } from "@/lib/config";
-import { checkAiUsageLimit, incrementAiUsage } from "@/lib/ai-usage";
+import { checkAndIncrementAiUsage, refundAiUsage } from "@/lib/ai-usage";
 
 export async function POST(request: NextRequest) {
   try {
@@ -30,6 +30,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Check activation for non-admin users
+    let isTrialUser = false;
+    let usage: { used: number; limit: number } | null = null;
     if (user.role !== "ADMIN" && user.role !== "SUPER_ADMIN") {
       const dbUser = await prisma.user.findUnique({
         where: { id: user.userId },
@@ -41,14 +43,16 @@ export async function POST(request: NextRequest) {
       }
 
       if (!dbUser.isActivated) {
-        // Trial user: check AI usage limit
-        const usageCheck = await checkAiUsageLimit(user.userId);
+        isTrialUser = true;
+        // 原子化“检查+扣减”，防止并发请求绕过每日限额
+        const usageCheck = await checkAndIncrementAiUsage(user.userId);
         if (!usageCheck.allowed) {
           return NextResponse.json(
             { error: usageCheck.message, usage: { used: usageCheck.used, limit: usageCheck.limit } },
             { status: 429 }
           );
         }
+        usage = { used: usageCheck.used, limit: usageCheck.limit };
       }
     }
 
@@ -79,27 +83,22 @@ export async function POST(request: NextRequest) {
     }
 
     if (!result.success) {
+      // AI 调用失败，退还本次额度
+      if (isTrialUser) {
+        await refundAiUsage(user.userId);
+      }
       return NextResponse.json(
         { error: result.error || "AI 请求失败，请稍后重试" },
         { status: 500 }
       );
     }
 
-    // Track usage for non-activated users
-    if (user.role !== "ADMIN" && user.role !== "SUPER_ADMIN") {
-      const dbUser = await prisma.user.findUnique({
-        where: { id: user.userId },
-        select: { isActivated: true },
+    if (isTrialUser && usage) {
+      return NextResponse.json({
+        success: true,
+        content: result.content,
+        usage,
       });
-      if (dbUser && !dbUser.isActivated) {
-        const newCount = await incrementAiUsage(user.userId);
-        const limit = parseInt(await getSystemConfig("ai_trial_daily_limit", "20"), 10);
-        return NextResponse.json({
-          success: true,
-          content: result.content,
-          usage: { used: newCount, limit },
-        });
-      }
     }
 
     return NextResponse.json({ success: true, content: result.content });

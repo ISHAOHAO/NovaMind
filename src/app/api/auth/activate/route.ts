@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import prisma from "@/lib/prisma";
 import { authenticateRequest } from "@/lib/auth";
+import { getClientIp } from "@/lib/device";
 
 const MAX_ATTEMPTS = 20;
 const BLOCK_DURATION_MS = 15 * 60 * 1000;
@@ -54,16 +55,6 @@ async function recordFailedAttempt(ip: string): Promise<void> {
 async function clearRateLimit(ip: string): Promise<void> {
   const key = `${RATE_LIMIT_KEY_PREFIX}${ip}`;
   await prisma.rateLimit.deleteMany({ where: { key } });
-}
-
-function getClientIp(req: NextRequest): string {
-  const forwarded = req.headers.get("x-forwarded-for");
-  if (forwarded) {
-    return forwarded.split(",")[0].trim();
-  }
-  const realIp = req.headers.get("x-real-ip");
-  if (realIp) return realIp;
-  return "127.0.0.1";
 }
 
 export async function POST(req: NextRequest) {

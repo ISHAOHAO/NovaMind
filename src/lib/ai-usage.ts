@@ -47,6 +47,22 @@ export async function incrementAiUsage(userId: string): Promise<number> {
   return newCount;
 }
 
+/**
+ * AI 调用失败时退还一次额度（配合原子化的 checkAndIncrementAiUsage 使用），
+ * 不做 TTL 处理：当日键已存在或很快过期，无需重设。
+ */
+export async function refundAiUsage(userId: string): Promise<void> {
+  try {
+    const key = getUsageKey(userId);
+    const count = await redis.decr(key);
+    if (count < 0) {
+      await redis.set(key, "0");
+    }
+  } catch {
+    // 退还失败不影响主流程
+  }
+}
+
 export async function getAiUsageToday(userId: string): Promise<{
   used: number;
   limit: number;

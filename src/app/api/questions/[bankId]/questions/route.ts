@@ -11,15 +11,37 @@ export async function GET(req: NextRequest, context: RouteContext) {
   try {
     const { bankId } = await context.params;
 
-    const cacheKey = `questions:detail:${bankId}:questions`;
-    const cached = await getFromCache<any>(cacheKey);
-    if (cached) {
-      return Response.json(cached);
+    // 题目列表包含答案与解析，必须登录且有权访问所属题库
+    const user = await authenticateRequest(req);
+    if (!user) {
+      return Response.json({ error: "请先登录" }, { status: 401 });
     }
 
-    const bank = await prisma.questionBank.findUnique({ where: { id: bankId } });
+    const bank = await prisma.questionBank.findUnique({
+      where: { id: bankId },
+      select: { id: true, isPublic: true, status: true, uploaderId: true },
+    });
     if (!bank) {
       return Response.json({ error: "题库不存在" }, { status: 404 });
+    }
+
+    const isPublicBank = bank.isPublic && bank.status === "APPROVED";
+    if (
+      !isPublicBank &&
+      bank.uploaderId !== user.userId &&
+      user.role !== "ADMIN" &&
+      user.role !== "SUPER_ADMIN"
+    ) {
+      return Response.json({ error: "您没有权限查看该题库的题目" }, { status: 403 });
+    }
+
+    // 仅公开且已过审的题库内容对所有用户一致，可安全共享缓存
+    const cacheKey = `questions:detail:${bankId}:questions`;
+    if (isPublicBank) {
+      const cached = await getFromCache<any>(cacheKey);
+      if (cached) {
+        return Response.json(cached);
+      }
     }
 
     const questions = await prisma.question.findMany({
@@ -51,7 +73,9 @@ export async function GET(req: NextRequest, context: RouteContext) {
       total: result.length,
     };
 
-    await setToCache(cacheKey, response, 120);
+    if (isPublicBank) {
+      await setToCache(cacheKey, response, 120);
+    }
 
     return Response.json(response);
   } catch (error: any) {

@@ -2,7 +2,11 @@ import { NextRequest } from "next/server";
 import bcrypt from "bcryptjs";
 import prisma from "@/lib/prisma";
 import { redis } from "@/lib/redis";
-import { rateLimit, checkRegistrationLimit } from "@/lib/rate-limit";
+import {
+  rateLimit,
+  checkRegistrationLimit,
+  commitRegistrationLimit,
+} from "@/lib/rate-limit";
 import { getClientIp, getDeviceFingerprint } from "@/lib/device";
 import { getSystemConfig } from "@/lib/config";
 import { registerSchema } from "@/lib/validations";
@@ -155,6 +159,15 @@ export async function POST(req: NextRequest) {
         createdAt: true,
       },
     });
+
+    // 注册成功后才扣减配额，避免无效请求（如邮箱已被占用）耗尽配额
+    await commitRegistrationLimit(ip, "ip");
+    if (deviceId) {
+      await commitRegistrationLimit(deviceId, "device");
+    }
+    if (emailDomain) {
+      await commitRegistrationLimit(emailDomain, "email_domain");
+    }
 
     if (emailVerificationRequired === "true") {
       const code = String(Math.floor(100000 + Math.random() * 900000));

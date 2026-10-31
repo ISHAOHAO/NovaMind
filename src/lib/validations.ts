@@ -36,7 +36,16 @@ export const changePasswordSchema = z.object({
 
 export const updateProfileSchema = z.object({
   name: z.string().min(1, "昵称不能为空").max(50, "昵称最多 50 个字符"),
-  avatar: z.string().optional(),
+  avatar: z
+    .string()
+    .max(7_000_000, "头像数据过大")
+    .refine(
+      (value) =>
+        /^data:image\/(png|jpe?g|webp|gif);base64,/.test(value) ||
+        /^https?:\/\//.test(value),
+      "头像仅支持图片链接或图片数据"
+    )
+    .optional(),
 });
 
 export const questionBankSchema = z.object({

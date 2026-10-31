@@ -2,6 +2,16 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import redis from "@/lib/redis";
 
+const isProd = process.env.NODE_ENV === "production";
+
+function errorMessage(error: unknown): string | undefined {
+  // 生产环境不对外暴露底层错误细节（可能包含连接串、主机名等）
+  if (!isProd) {
+    return error instanceof Error ? error.message : "连接失败";
+  }
+  return undefined;
+}
+
 export async function GET() {
   const details: Record<string, { status: string; message?: string }> = {};
 
@@ -11,7 +21,7 @@ export async function GET() {
   } catch (error) {
     details.database = {
       status: "unhealthy",
-      message: error instanceof Error ? error.message : "数据库连接失败",
+      message: errorMessage(error),
     };
   }
 
@@ -28,7 +38,7 @@ export async function GET() {
   } catch (error) {
     details.redis = {
       status: "unhealthy",
-      message: error instanceof Error ? error.message : "Redis 连接失败",
+      message: errorMessage(error),
     };
   }
 

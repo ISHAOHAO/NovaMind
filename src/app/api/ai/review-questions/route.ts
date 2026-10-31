@@ -1,13 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
+import prisma from "@/lib/prisma";
 import { authenticateRequest } from "@/lib/auth";
 import { getSystemConfig } from "@/lib/config";
 import { askAi } from "@/lib/ai";
+import { checkAndIncrementAiUsage, refundAiUsage } from "@/lib/ai-usage";
 
 export async function POST(request: NextRequest) {
+  let trialUserId: string | null = null;
   try {
     const user = await authenticateRequest(request);
     if (!user) {
       return NextResponse.json({ error: "请先登录" }, { status: 401 });
+    }
+
+    // 试用用户同样受限额约束（此前完全无限制，可被滥用消耗 AI 配额）
+    if (user.role !== "ADMIN" && user.role !== "SUPER_ADMIN") {
+      const dbUser = await prisma.user.findUnique({
+        where: { id: user.userId },
+        select: { isActivated: true },
+      });
+      if (dbUser && !dbUser.isActivated) {
+        trialUserId = user.userId;
+        const usageCheck = await checkAndIncrementAiUsage(user.userId);
+        if (!usageCheck.allowed) {
+          return NextResponse.json(
+            { error: usageCheck.message, usage: { used: usageCheck.used, limit: usageCheck.limit } },
+            { status: 429 }
+          );
+        }
+      }
     }
 
     const aiEnabled = await getSystemConfig("ai_enabled");
@@ -64,6 +85,10 @@ ${questionsForPrompt}`;
     );
 
     if (!result.success || !result.content) {
+      // AI 调用失败，退还本次额度
+      if (trialUserId) {
+        await refundAiUsage(trialUserId);
+      }
       return NextResponse.json(
         { error: result.error || "AI 服务返回异常，请稍后重试" },
         { status: 500 }

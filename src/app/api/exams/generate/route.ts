@@ -3,10 +3,11 @@ import prisma from "@/lib/prisma";
 import { authenticateRequest } from "@/lib/auth";
 import { generateQuestionsByTopic } from "@/lib/ai";
 import { getSystemConfig } from "@/lib/config";
-import { checkAiUsageLimit, incrementAiUsage } from "@/lib/ai-usage";
+import { checkAndIncrementAiUsage, refundAiUsage, getAiUsageToday } from "@/lib/ai-usage";
 import { formatDate } from "@/lib/utils";
 
 export async function POST(req: NextRequest) {
+  let trialUserId: string | null = null;
   try {
     const user = await authenticateRequest(req);
     if (!user) {
@@ -24,7 +25,9 @@ export async function POST(req: NextRequest) {
       }
 
       if (!dbUser.isActivated) {
-        const usageCheck = await checkAiUsageLimit(user.userId);
+        trialUserId = user.userId;
+        // 原子化“检查+扣减”，防止并发请求绕过每日限额
+        const usageCheck = await checkAndIncrementAiUsage(user.userId);
         if (!usageCheck.allowed) {
           return Response.json(
             { error: usageCheck.message, usage: { used: usageCheck.used, limit: usageCheck.limit } },
@@ -64,6 +67,10 @@ export async function POST(req: NextRequest) {
     const result = await generateQuestionsByTopic(topic.trim(), qCount, diff, "single");
 
     if (!result.success) {
+      // AI 调用失败，退还本次额度
+      if (trialUserId) {
+        await refundAiUsage(trialUserId);
+      }
       return Response.json(
         { error: result.error || "AI 生成题目失败，请稍后重试" },
         { status: 500 }
@@ -147,8 +154,8 @@ export async function POST(req: NextRequest) {
         select: { isActivated: true },
       });
       if (dbUser && !dbUser.isActivated) {
-        const newCount = await incrementAiUsage(user.userId);
-        const limitVal = parseInt(await getSystemConfig("ai_trial_daily_limit", "20"), 10);
+        // 额度已在调用前原子扣减，这里仅回显用量
+        const usage = await getAiUsageToday(user.userId);
         return Response.json(
           {
             exam: {
@@ -158,7 +165,7 @@ export async function POST(req: NextRequest) {
               questionCount: exam._count.questions,
               createdAt: formatDate(exam.createdAt),
             },
-            usage: { used: newCount, limit: limitVal },
+            usage,
           },
           { status: 201 }
         );
