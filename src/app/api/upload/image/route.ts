@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { authenticateRequest } from "@/lib/auth";
+import { saveImageBuffer } from "@/lib/storage";
 import sharp from "sharp";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -110,13 +111,16 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "图片处理失败，请确认文件是否为有效图片" }, { status: 400 });
     }
 
-    const base64 = compressed.toString("base64");
-    const dataUrl = `data:image/jpeg;base64,${base64}`;
+    // 压缩后的图片落盘存储，数据库/前端只引用 URL，避免 base64 撑大记录与响应
+    const url = await saveImageBuffer(compressed, "image/jpeg");
+    if (!url) {
+      return Response.json({ error: "图片保存失败，请稍后重试" }, { status: 500 });
+    }
 
     return Response.json({
       success: true,
       data: {
-        url: dataUrl,
+        url,
         size: compressed.length,
         originalSize: file.size,
         mimeType: "image/jpeg",

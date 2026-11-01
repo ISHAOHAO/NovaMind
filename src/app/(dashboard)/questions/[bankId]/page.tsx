@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useRouter, useParams } from "next/navigation";
 import toast from "react-hot-toast";
 import {
@@ -67,13 +67,20 @@ interface AnswerResult {
 
 // 侧栏一次最多渲染的题目数：大题库（数千题）时避免生成上万 DOM 节点
 const SIDEBAR_WINDOW = 200;
+// 详情懒加载分页大小（与后端 offset/limit 上限 300 对齐）
+const PAGE_SIZE = 200;
 
 export default function QuestionPracticePage() {
   const router = useRouter();
   const params = useParams();
   const bankId = params.bankId as string;
 
-  const [questions, setQuestions] = useState<Question[]>([]);
+  // 题库题目按 sortOrder 的有序 ID 列表（轻量接口，初始即加载）
+  const [idList, setIdList] = useState<string[]>([]);
+  // 题目详情缓存（按题目 ID）：大题库按页/按需加载，避免一次性拉取全库
+  const [details, setDetails] = useState<Map<string, Question>>(new Map());
+  // 展示顺序 → idList 下标的映射（顺序练习为恒等排列，随机练习为打乱后的排列）
+  const [displayOrder, setDisplayOrder] = useState<number[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   // 侧栏当前渲染窗口的起始位置（仅题目数超过 SIDEBAR_WINDOW 时生效）
   const [sidebarStart, setSidebarStart] = useState(0);
@@ -112,11 +119,121 @@ export default function QuestionPracticePage() {
   const [showSummary, setShowSummary] = useState(false);
   const sessionIdRef = useRef(crypto.randomUUID());
 
+  // 懒加载：已请求过的页（按题库顺序分页）与进行中的请求
+  const fetchedPagesRef = useRef<Set<number>>(new Set());
+  const inFlightPagesRef = useRef<Set<number>>(new Set());
+
+  const authHeaders = useCallback((): Record<string, string> => {
+    const token = localStorage.getItem("novamind_token");
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }, []);
+
+  /** 按题库顺序分页拉取题目详情，合并进 details 缓存 */
+  const loadPage = useCallback(async (pageIdx: number): Promise<boolean> => {
+    if (pageIdx < 0) return false;
+    if (fetchedPagesRef.current.has(pageIdx) || inFlightPagesRef.current.has(pageIdx)) return true;
+    const start = pageIdx * PAGE_SIZE;
+    if (start >= idList.length) return false;
+    inFlightPagesRef.current.add(pageIdx);
+    try {
+      const limit = Math.min(PAGE_SIZE, idList.length - start);
+      const res = await fetch(
+        `/api/questions/${bankId}/questions?offset=${start}&limit=${limit}`,
+        { headers: authHeaders() }
+      );
+      if (!res.ok) return false;
+      const qd = await res.json();
+      const list: Question[] = qd.data || [];
+      fetchedPagesRef.current.add(pageIdx);
+      setDetails((prev) => {
+        const next = new Map(prev);
+        list.forEach((q) => next.set(q.id, q));
+        return next;
+      });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      inFlightPagesRef.current.delete(pageIdx);
+    }
+  }, [bankId, idList.length, authHeaders]);
+
+  /** 按需拉取单题详情（随机模式下题目散布各页，单题拉取最省流量） */
+  const fetchDetail = useCallback(async (questionId: string): Promise<Question | null> => {
+    try {
+      const res = await fetch(`/api/questions/${bankId}/questions/${questionId}`, {
+        headers: authHeaders(),
+      });
+      if (!res.ok) return null;
+      const qd = await res.json();
+      const q: Question | null = qd.data || null;
+      if (q) {
+        setDetails((prev) => new Map(prev).set(q.id, q));
+      }
+      return q;
+    } catch {
+      return null;
+    }
+  }, [bankId, authHeaders]);
+
+  /** 确保展示位 index 的题目可用：顺序模式按页预取，随机模式单题按需 */
+  const ensureAt = useCallback((displayIdx: number) => {
+    if (displayIdx < 0 || displayIdx >= displayOrder.length) return;
+    const bankIdx = displayOrder[displayIdx];
+    const questionId = idList[bankIdx];
+    if (!questionId) return;
+    const pageIdx = Math.floor(bankIdx / PAGE_SIZE);
+
+    if (mode === "sequential") {
+      // 顺序练习：展示序 == 题库序，整页拉取 + 预取下一页
+      loadPage(pageIdx);
+      loadPage(pageIdx + 1);
+    } else {
+      // 随机练习：题目散布，仅拉当前题与相邻展示位的单题
+      if (!details.has(questionId)) fetchDetail(questionId);
+      const nextId = idList[displayOrder[displayIdx + 1] ?? -1];
+      if (nextId && !details.has(nextId)) fetchDetail(nextId);
+    }
+  }, [displayOrder, idList, mode, details, loadPage, fetchDetail]);
+
+  /** 侧栏窗口内缺失的题目补拉：顺序模式整页拉取更高效，随机模式小批量并发补单题 */
+  const fillWindow = useCallback((start: number) => {
+    if (displayOrder.length === 0) return;
+    if (mode === "sequential") {
+      const firstPage = Math.floor(start / PAGE_SIZE);
+      const lastPage = Math.floor(Math.min(start + SIDEBAR_WINDOW - 1, displayOrder.length - 1) / PAGE_SIZE);
+      for (let p = firstPage; p <= lastPage; p++) {
+        loadPage(p);
+      }
+      return;
+    }
+    const missingIds: string[] = [];
+    const end = Math.min(start + SIDEBAR_WINDOW, displayOrder.length);
+    for (let i = start; i < end; i++) {
+      const id = idList[displayOrder[i]];
+      if (id && !details.has(id)) missingIds.push(id);
+    }
+    if (missingIds.length === 0) return;
+    const CONCURRENCY = 8;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < missingIds.length) {
+        const id = missingIds[cursor++];
+        await fetchDetail(id);
+      }
+    };
+    for (let w = 0; w < Math.min(CONCURRENCY, missingIds.length); w++) {
+      worker();
+    }
+  }, [displayOrder, idList, details, mode, loadPage, fetchDetail]);
+
   const fetchQuestions = useCallback(async () => {
     const token = localStorage.getItem("novamind_token");
     if (!token) { router.replace("/login"); return; }
 
     setLoading(true);
+    fetchedPagesRef.current = new Set();
+    inFlightPagesRef.current = new Set();
     try {
       const bankRes = await fetch(`/api/questions/${bankId}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -126,12 +243,29 @@ export default function QuestionPracticePage() {
         setBankTitle(bd.data?.title || "");
       }
 
-      const qRes = await fetch(`/api/questions/${bankId}/questions`, {
+      // 初始只拉轻量 ID 列表 + 第一页详情，其余按需加载
+      const idsRes = await fetch(`/api/questions/${bankId}/questions?fields=ids`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (qRes.ok) {
-        const qd = await qRes.json();
-        setQuestions(qd.data || []);
+      if (idsRes.ok) {
+        const idsData = await idsRes.json();
+        const ids: string[] = idsData.data || [];
+        setIdList(ids);
+        setDisplayOrder(ids.map((_, i) => i));
+
+        if (ids.length > 0) {
+          const limit = Math.min(PAGE_SIZE, ids.length);
+          const pageRes = await fetch(
+            `/api/questions/${bankId}/questions?offset=0&limit=${limit}`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (pageRes.ok) {
+            const qd = await pageRes.json();
+            const list: Question[] = qd.data || [];
+            fetchedPagesRef.current.add(0);
+            setDetails(new Map(list.map((q) => [q.id, q])));
+          }
+        }
       }
     } catch {
       // ignore
@@ -144,9 +278,17 @@ export default function QuestionPracticePage() {
     fetchQuestions();
   }, [fetchQuestions]);
 
-  const currentQuestion = questions[currentIndex];
-  const progress = questions.length > 0 ? ((currentIndex + 1) / questions.length) * 100 : 0;
+  const currentQuestion = displayOrder.length > 0
+    ? details.get(idList[displayOrder[currentIndex]] ?? "") ?? null
+    : null;
+  const progress = displayOrder.length > 0 ? ((currentIndex + 1) / displayOrder.length) * 100 : 0;
   const answeredCount = allResults.length;
+
+  // 答题结果按题目 ID 建索引，侧栏渲染时 O(1) 查询（此前为逐项 find）
+  const resultByQuestionId = useMemo(
+    () => new Map(allResults.map((r) => [r.questionId, r])),
+    [allResults]
+  );
 
   useEffect(() => {
     if (currentQuestion) {
@@ -194,24 +336,33 @@ export default function QuestionPracticePage() {
   }, []);
 
   const goToQuestion = (index: number) => {
-    if (index < 0 || index >= questions.length) return;
+    if (index < 0 || index >= displayOrder.length) return;
     setCurrentIndex(index);
     resetAnswerState();
+    ensureAt(index);
   };
 
-  // 题目数超出窗口时，让侧栏窗口跟随当前题滚动
+  // 题目数超出窗口时，让侧栏窗口跟随当前题滚动（窗口按页对齐）
   useEffect(() => {
-    if (questions.length <= SIDEBAR_WINDOW) return;
-    const margin = 30;
+    if (displayOrder.length <= SIDEBAR_WINDOW) return;
     if (
-      currentIndex < sidebarStart + margin ||
-      currentIndex >= sidebarStart + SIDEBAR_WINDOW - margin
+      currentIndex < sidebarStart ||
+      currentIndex >= sidebarStart + SIDEBAR_WINDOW
     ) {
-      setSidebarStart(
-        Math.max(0, Math.min(currentIndex - 50, questions.length - SIDEBAR_WINDOW))
-      );
+      const aligned = Math.floor(currentIndex / SIDEBAR_WINDOW) * SIDEBAR_WINDOW;
+      setSidebarStart(Math.min(aligned, displayOrder.length - SIDEBAR_WINDOW));
     }
-  }, [currentIndex, questions.length, sidebarStart]);
+  }, [currentIndex, displayOrder.length, sidebarStart]);
+
+  // 侧栏窗口变化时补拉缺失的题目详情
+  useEffect(() => {
+    fillWindow(sidebarStart);
+  }, [sidebarStart, fillWindow]);
+
+  // 当前展示位变化（含随机打乱后）时，确保当前题与相邻题可用
+  useEffect(() => {
+    ensureAt(currentIndex);
+  }, [currentIndex, ensureAt]);
 
   const checkAnswer = () => {
     if (!currentQuestion) return;
@@ -281,7 +432,7 @@ export default function QuestionPracticePage() {
   };
 
   const handleNext = () => {
-    if (currentIndex < questions.length - 1) {
+    if (currentIndex < displayOrder.length - 1) {
       goToQuestion(currentIndex + 1);
     } else {
       setShowSummary(true);
@@ -410,8 +561,15 @@ export default function QuestionPracticePage() {
   };
 
   const shuffleQuestions = () => {
-    const shuffled = [...questions].sort(() => Math.random() - 0.5);
-    setQuestions(shuffled);
+    // 只打乱展示顺序（索引映射），题目详情缓存不受影响，按需继续加载
+    setDisplayOrder((prev) => {
+      const indices = [...prev];
+      for (let i = indices.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [indices[i], indices[j]] = [indices[j], indices[i]];
+      }
+      return indices;
+    });
     setCurrentIndex(0);
     resetAnswerState();
   };
@@ -426,7 +584,7 @@ export default function QuestionPracticePage() {
     );
   }
 
-  if (questions.length === 0) {
+  if (displayOrder.length === 0) {
     return (
       <div className="mx-auto max-w-3xl text-center">
         <p className="text-muted-foreground">该题库暂无题目</p>
@@ -496,7 +654,7 @@ export default function QuestionPracticePage() {
             <X className="h-4 w-4" />
           </Button>
         </div>
-        {questions.length > SIDEBAR_WINDOW && (
+        {displayOrder.length > SIDEBAR_WINDOW && (
           <div className="flex items-center justify-between gap-2 border-b px-3 py-2 text-xs text-muted-foreground">
             <Button
               variant="outline" size="sm" className="h-6 px-2 text-xs"
@@ -506,21 +664,37 @@ export default function QuestionPracticePage() {
               前一页
             </Button>
             <span>
-              第 {sidebarStart + 1}-{Math.min(sidebarStart + SIDEBAR_WINDOW, questions.length)} 题 / 共 {questions.length} 题
+              第 {sidebarStart + 1}-{Math.min(sidebarStart + SIDEBAR_WINDOW, displayOrder.length)} 题 / 共 {displayOrder.length} 题
             </span>
             <Button
               variant="outline" size="sm" className="h-6 px-2 text-xs"
-              disabled={sidebarStart + SIDEBAR_WINDOW >= questions.length}
-              onClick={() => setSidebarStart(Math.min(questions.length - SIDEBAR_WINDOW, sidebarStart + SIDEBAR_WINDOW))}
+              disabled={sidebarStart + SIDEBAR_WINDOW >= displayOrder.length}
+              onClick={() => setSidebarStart(Math.min(displayOrder.length - SIDEBAR_WINDOW, sidebarStart + SIDEBAR_WINDOW))}
             >
               后一页
             </Button>
           </div>
         )}
         <div className="max-h-[calc(100vh-10rem)] overflow-auto p-2">
-          {questions.slice(sidebarStart, sidebarStart + SIDEBAR_WINDOW).map((q, windowIdx) => {
+          {displayOrder.slice(sidebarStart, sidebarStart + SIDEBAR_WINDOW).map((bankIdx, windowIdx) => {
             const i = sidebarStart + windowIdx;
-            const qResult = allResults.find((r) => r.questionId === q.id);
+            const q = details.get(idList[bankIdx] ?? "");
+            const qResult = q ? resultByQuestionId.get(q.id) : undefined;
+            // 详情尚未加载到时渲染占位，点击后自动触发加载
+            if (!q) {
+              return (
+                <button
+                  key={`placeholder-${idList[bankIdx] ?? i}`}
+                  onClick={() => { goToQuestion(i); setSidebarOpen(false); }}
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-muted-foreground/60 transition-colors hover:bg-accent"
+                >
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs">
+                    {i + 1}
+                  </span>
+                  <span className="truncate">加载中...</span>
+                </button>
+              );
+            }
             return (
               <button
                 key={q.id}
@@ -555,7 +729,7 @@ export default function QuestionPracticePage() {
             <div>
               <h1 className="text-xl font-bold">{bankTitle}</h1>
               <p className="text-sm text-muted-foreground">
-                {answeredCount}/{questions.length} 已答
+                {answeredCount}/{displayOrder.length} 已答
               </p>
             </div>
             <Button
@@ -589,6 +763,14 @@ export default function QuestionPracticePage() {
         </Tabs>
 
         {/* Question card */}
+        {!currentQuestion ? (
+          <Card>
+            <CardContent className="flex h-64 flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              题目加载中...
+            </CardContent>
+          </Card>
+        ) : (
         <Card>
           <CardHeader>
             <div className="flex items-start justify-between">
@@ -819,6 +1001,7 @@ export default function QuestionPracticePage() {
             )}
           </CardContent>
         </Card>
+        )}
 
         {/* Action buttons */}
         <div className="flex flex-wrap items-center gap-2">
@@ -826,6 +1009,7 @@ export default function QuestionPracticePage() {
             <Button
               onClick={checkAnswer}
               disabled={
+                !currentQuestion ||
                 (currentQuestion.type === "single" && !selectedOption) ||
                 (currentQuestion.type === "multiple" && selectedOptions.length === 0) ||
                 (currentQuestion.type === "truefalse" && !truefalseAnswer) ||
@@ -838,7 +1022,7 @@ export default function QuestionPracticePage() {
             </Button>
           ) : (
             <Button onClick={handleNext}>
-              {currentIndex < questions.length - 1 ? (
+              {currentIndex < displayOrder.length - 1 ? (
                 <>
                   下一题
                   <ChevronRight className="ml-2 h-4 w-4" />
@@ -962,12 +1146,12 @@ export default function QuestionPracticePage() {
             上一题
           </Button>
           <span className="text-sm text-muted-foreground">
-            {currentIndex + 1} / {questions.length}
+            {currentIndex + 1} / {displayOrder.length}
           </span>
           <Button
             variant="outline"
             onClick={() => goToQuestion(currentIndex + 1)}
-            disabled={currentIndex >= questions.length - 1}
+            disabled={currentIndex >= displayOrder.length - 1}
           >
             下一题
             <ChevronRight className="ml-2 h-4 w-4" />

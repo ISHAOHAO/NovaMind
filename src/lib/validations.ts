@@ -42,7 +42,8 @@ export const updateProfileSchema = z.object({
     .refine(
       (value) =>
         /^data:image\/(png|jpe?g|webp|gif);base64,/.test(value) ||
-        /^https?:\/\//.test(value),
+        /^https?:\/\//.test(value) ||
+        /^\/api\/uploads\/images\//.test(value),
       "头像仅支持图片链接或图片数据"
     )
     .optional(),

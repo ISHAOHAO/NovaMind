@@ -7,6 +7,22 @@ import { invalidatePattern, getFromCache, setToCache } from "@/lib/redis";
 
 type RouteContext = { params: Promise<{ bankId: string }> };
 
+// 从完整列表响应中切分出分页响应（缓存始终存完整列表，切分在命中后进行）
+function slicePageResponse(
+  full: { data: any[]; total: number },
+  offset: number,
+  limit: number
+) {
+  const page = full.data.slice(offset, offset + limit);
+  return Response.json({
+    data: page,
+    total: full.total,
+    offset,
+    limit,
+    hasMore: offset + limit < full.total,
+  });
+}
+
 export async function GET(req: NextRequest, context: RouteContext) {
   try {
     const { bankId } = await context.params;
@@ -36,11 +52,45 @@ export async function GET(req: NextRequest, context: RouteContext) {
     }
 
     // 仅公开且已过审的题库内容对所有用户一致，可安全共享缓存
+    const { searchParams } = new URL(req.url);
+    const fields = searchParams.get("fields");
+    const offsetParam = searchParams.get("offset");
+    const limitParam = searchParams.get("limit");
+
+    // 轻量模式：仅返回有序 ID 列表（供前端懒加载调度用）
+    if (fields === "ids") {
+      const idsCacheKey = `questions:ids:${bankId}:list`;
+      if (isPublicBank) {
+        const cachedIds = await getFromCache<string[]>(idsCacheKey);
+        if (cachedIds) {
+          return Response.json({ data: cachedIds, total: cachedIds.length });
+        }
+      }
+
+      const ids = await prisma.question.findMany({
+        where: { bankId },
+        orderBy: { sortOrder: "asc" },
+        select: { id: true },
+      });
+      const idList = ids.map((q) => q.id);
+      const response = { data: idList, total: idList.length };
+      if (isPublicBank) {
+        await setToCache(idsCacheKey, response, 120);
+      }
+      return Response.json(response);
+    }
+
+    const paginated = offsetParam !== null || limitParam !== null;
+    const offset = Math.max(0, parseInt(offsetParam || "0", 10) || 0);
+    const limit = Math.min(300, Math.max(1, parseInt(limitParam || "200", 10) || 200));
+
     const cacheKey = `questions:detail:${bankId}:questions`;
     if (isPublicBank) {
       const cached = await getFromCache<any>(cacheKey);
       if (cached) {
-        return Response.json(cached);
+        return paginated
+          ? slicePageResponse(cached, offset, limit)
+          : Response.json(cached);
       }
     }
 
@@ -75,6 +125,10 @@ export async function GET(req: NextRequest, context: RouteContext) {
 
     if (isPublicBank) {
       await setToCache(cacheKey, response, 120);
+    }
+
+    if (paginated) {
+      return slicePageResponse(response, offset, limit);
     }
 
     return Response.json(response);

@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { authenticateRequest } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { invalidatePattern } from "@/lib/redis";
+import { saveImageFromDataUrl } from "@/lib/storage";
 
 const VALID_TYPES = ["single", "multiple", "truefalse", "fillblank", "cloze"];
 // 单次导入上限。后端按分块批量写入，前端同步支持大题量编辑与分批提交
@@ -543,11 +544,22 @@ function detectQuestionType(
 // ============================================================
 // 5. Validate & Normalize
 // ============================================================
-function validateAndNormalize(
+async function validateAndNormalize(
   rawQuestions: any[]
-): { questions: NormalizedQuestion[]; errors: string[] } {
+): Promise<{ questions: NormalizedQuestion[]; errors: string[] }> {
   const parsedQuestions: NormalizedQuestion[] = [];
   const errors: string[] = [];
+
+  // 内嵌图片（docx 导入）先并行转存为文件，数据库仅存 URL，避免 base64 撑大记录
+  const imageUrls: (string | null)[] = await Promise.all(
+    rawQuestions.map((q) => {
+      const img = q?.image;
+      if (typeof img === "string" && img.startsWith("data:image/")) {
+        return saveImageFromDataUrl(img).catch(() => null);
+      }
+      return Promise.resolve(typeof img === "string" ? img : null);
+    })
+  );
 
   for (let i = 0; i < rawQuestions.length; i++) {
     const q = rawQuestions[i];
@@ -594,10 +606,10 @@ function validateAndNormalize(
       continue;
     }
 
-    let image = q.image || undefined;
-    // Validate image is a valid data URI
+    let image = imageUrls[i] || undefined;
+    // 仅接受文件 URL、http(s) 链接（转存失败的 data URL 直接丢弃）
     if (image && typeof image === "string") {
-      if (!image.startsWith("data:image/") && !image.startsWith("http")) {
+      if (!image.startsWith("/api/uploads/") && !image.startsWith("http")) {
         image = undefined;
       }
     }
@@ -748,7 +760,7 @@ export async function POST(req: NextRequest) {
     }
 
     const { questions: parsedQuestions, errors } =
-      validateAndNormalize(rawQuestions);
+      await validateAndNormalize(rawQuestions);
 
     if (parsedQuestions.length === 0) {
       return Response.json(

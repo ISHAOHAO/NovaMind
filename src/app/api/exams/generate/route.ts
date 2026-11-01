@@ -110,21 +110,24 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    const createdQuestions = await Promise.all(
-      questions.map((q, idx) =>
-        prisma.question.create({
-          data: {
-            bankId: bank.id,
-            type: "single",
-            content: q.content || "",
-            options: q.options || [],
-            answer: q.answer || "",
-            analysis: q.analysis || "",
-            sortOrder: idx,
-          },
-        })
-      )
-    );
+    await prisma.question.createMany({
+      data: questions.map((q, idx) => ({
+        bankId: bank.id,
+        type: "single",
+        content: q.content || "",
+        options: q.options || [],
+        answer: q.answer || "",
+        analysis: q.analysis || "",
+        sortOrder: idx,
+      })),
+    });
+
+    // createMany 不返回行，按 sortOrder 取回以保持题目顺序
+    const createdQuestions = await prisma.question.findMany({
+      where: { bankId: bank.id },
+      select: { id: true, sortOrder: true },
+      orderBy: { sortOrder: "asc" },
+    });
 
     const exam = await prisma.exam.create({
       data: {
