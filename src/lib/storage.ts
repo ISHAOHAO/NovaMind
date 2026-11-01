@@ -53,6 +53,8 @@ export async function saveImageFromDataUrl(dataUrl: string): Promise<string | nu
 export async function saveImageBuffer(buffer: Buffer, mime: string): Promise<string | null> {
   const ext = MIME_TO_EXT[mime.toLowerCase()];
   if (!ext) return null;
+  // 防御纵深：无论来源如何，单文件不超过 5MB
+  if (buffer.length === 0 || buffer.length > MAX_IMAGE_BYTES) return null;
 
   const fileName = `${randomUUID()}.${ext}`;
   await fs.mkdir(IMAGE_DIR, { recursive: true });

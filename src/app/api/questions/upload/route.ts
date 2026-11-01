@@ -9,6 +9,14 @@ const VALID_TYPES = ["single", "multiple", "truefalse", "fillblank", "cloze"];
 const MAX_QUESTIONS = 5000;
 // createMany 分块大小：避免单条 SQL 参数过多（每题约 8 个参数）
 const IMPORT_CHUNK_SIZE = 500;
+// 单次导入图片转存总预算（估算解码后字节），防止异常文件写满磁盘
+const MAX_IMPORT_IMAGE_BYTES = 100 * 1024 * 1024;
+// 单题字段长度上限：防止恶意文件撑爆数据库
+const MAX_CONTENT_LEN = 20000;
+const MAX_ANSWER_LEN = 2000;
+const MAX_ANALYSIS_LEN = 20000;
+const MAX_OPTION_VALUE_LEN = 5000;
+const MAX_OPTIONS_COUNT = 26;
 
 interface NormalizedQuestion {
   type: string;
@@ -551,15 +559,30 @@ async function validateAndNormalize(
   const errors: string[] = [];
 
   // 内嵌图片（docx 导入）先并行转存为文件，数据库仅存 URL，避免 base64 撑大记录
+  // 超出总预算的图片跳过转存（该题图片将被忽略），并记入警告
+  let imageBudget = MAX_IMPORT_IMAGE_BYTES;
+  let skippedImages = 0;
   const imageUrls: (string | null)[] = await Promise.all(
     rawQuestions.map((q) => {
       const img = q?.image;
       if (typeof img === "string" && img.startsWith("data:image/")) {
+        // 按长度估算解码后大小（base64 ≈ 3/4）
+        const estimated = Math.floor(img.length * 0.75);
+        if (estimated > imageBudget) {
+          skippedImages++;
+          return Promise.resolve(null as string | null);
+        }
+        imageBudget -= estimated;
         return saveImageFromDataUrl(img).catch(() => null);
       }
       return Promise.resolve(typeof img === "string" ? img : null);
     })
   );
+  if (skippedImages > 0) {
+    errors.push(
+      `${skippedImages} 张图片超过单次导入总预算（${Math.round(MAX_IMPORT_IMAGE_BYTES / 1024 / 1024)}MB），已忽略，可拆分文件后分批导入`
+    );
+  }
 
   for (let i = 0; i < rawQuestions.length; i++) {
     const q = rawQuestions[i];
@@ -567,9 +590,14 @@ async function validateAndNormalize(
 
     const content = typeof q.content === "string" ? q.content.trim() : "";
     if (!content) rowErrors.push("缺少题目内容");
+    else if (content.length > MAX_CONTENT_LEN) rowErrors.push("题目内容过长");
 
     const answer = typeof q.answer === "string" ? q.answer.trim() : "";
     if (!answer) rowErrors.push("缺少答案");
+    else if (answer.length > MAX_ANSWER_LEN) rowErrors.push("答案过长");
+
+    const analysis = typeof q.analysis === "string" ? q.analysis.trim() : "";
+    if (analysis.length > MAX_ANALYSIS_LEN) rowErrors.push("解析过长");
 
     let type = q.type || "single";
     if (!VALID_TYPES.includes(type)) {
@@ -585,6 +613,16 @@ async function validateAndNormalize(
       }
     }
     if (!Array.isArray(options)) options = [];
+    if (options.length > MAX_OPTIONS_COUNT) {
+      rowErrors.push(`选项数量超过 ${MAX_OPTIONS_COUNT} 个`);
+    } else if (
+      options.some(
+        (o: any) =>
+          typeof o?.value === "string" && o.value.length > MAX_OPTION_VALUE_LEN
+      )
+    ) {
+      rowErrors.push("选项内容过长");
+    }
 
     // For single/multiple with options, verify answer is valid
     if (
@@ -619,7 +657,7 @@ async function validateAndNormalize(
       content,
       options: ["truefalse", "fillblank"].includes(type) ? [] : options,
       answer,
-      analysis: typeof q.analysis === "string" ? q.analysis.trim() : "",
+      analysis,
       image,
       sortOrder: i,
     });

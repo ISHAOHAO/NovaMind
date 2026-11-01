@@ -61,16 +61,16 @@ export const questionBankSchema = z.object({
 
 export const questionSchema = z.object({
   type: z.enum(["single", "multiple", "truefalse", "fillblank", "cloze"]),
-  content: z.string().min(1, "题目内容不能为空"),
+  content: z.string().min(1, "题目内容不能为空").max(20000, "题目内容过长"),
   options: z.array(
     z.object({
-      key: z.string(),
-      value: z.string(),
+      key: z.string().max(10),
+      value: z.string().max(5000, "选项内容过长"),
     })
-  ).optional(),
-  answer: z.string().min(1, "答案不能为空"),
-  analysis: z.string().optional(),
-  image: z.string().optional(),
+  ).max(26, "选项数量过多").optional(),
+  answer: z.string().min(1, "答案不能为空").max(2000, "答案过长"),
+  analysis: z.string().max(20000, "解析过长").optional(),
+  image: z.string().max(7_000_000, "图片数据过大").optional(),
   sortOrder: z.number().default(0),
 });
 

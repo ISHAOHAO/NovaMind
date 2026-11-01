@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { authenticateRequest } from "@/lib/auth";
+import { rateLimit } from "@/lib/rate-limit";
 import { saveImageBuffer } from "@/lib/storage";
 import sharp from "sharp";
 
@@ -48,6 +49,18 @@ export async function POST(req: NextRequest) {
     const user = await authenticateRequest(req);
     if (!user) {
       return Response.json({ error: "请先登录" }, { status: 401 });
+    }
+
+    // 每用户限流（在读取与压缩处理之前），防止脚本刷接口写满磁盘
+    const { allowed } = await rateLimit(`img_upload:${user.userId}`, {
+      maxRequests: 20,
+      windowMs: 10 * 60 * 1000,
+    });
+    if (!allowed) {
+      return Response.json(
+        { error: "图片上传过于频繁，请10分钟后再试" },
+        { status: 429 }
+      );
     }
 
     const formData = await req.formData();
@@ -111,7 +124,14 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "图片处理失败，请确认文件是否为有效图片" }, { status: 400 });
     }
 
-    // 压缩后的图片落盘存储，数据库/前端只引用 URL，避免 base64 撑大记录与响应
+    // 落盘前最终尺寸上限：防止噪声图多次压缩后仍然过大写满磁盘
+    if (compressed.length > 5 * 1024 * 1024) {
+      return Response.json(
+        { error: "图片处理后仍然过大，请更换图片或裁剪后重试" },
+        { status: 400 }
+      );
+    }
+
     const url = await saveImageBuffer(compressed, "image/jpeg");
     if (!url) {
       return Response.json({ error: "图片保存失败，请稍后重试" }, { status: 500 });
