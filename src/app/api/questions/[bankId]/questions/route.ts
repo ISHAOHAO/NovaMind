@@ -110,6 +110,15 @@ export async function POST(req: NextRequest, context: RouteContext) {
       return Response.json({ error: "请至少提供一道题目" }, { status: 400 });
     }
 
+    // 单请求上限：前端分批提交（每批 500），此处防御异常超大载荷
+    const MAX_PER_REQUEST = 2000;
+    if (questions.length > MAX_PER_REQUEST) {
+      return Response.json(
+        { error: `单次最多添加 ${MAX_PER_REQUEST} 道题目，请分批提交` },
+        { status: 400 }
+      );
+    }
+
     const errors: { index: number; errors: any }[] = [];
     const validQuestions: typeof questionSchema._type[] = [];
 
@@ -132,10 +141,14 @@ export async function POST(req: NextRequest, context: RouteContext) {
       }, { status: 400 });
     }
 
-    const created = await prisma.$transaction(
-      validQuestions.map((q) =>
-        prisma.question.create({
-          data: {
+    // 分块批量写入，保持事务原子性
+    const IMPORT_CHUNK_SIZE = 500;
+    let imported = 0;
+    await prisma.$transaction(async (tx) => {
+      for (let i = 0; i < validQuestions.length; i += IMPORT_CHUNK_SIZE) {
+        const chunk = validQuestions.slice(i, i + IMPORT_CHUNK_SIZE);
+        const result = await tx.question.createMany({
+          data: chunk.map((q) => ({
             bankId,
             type: q.type,
             content: q.content,
@@ -144,16 +157,17 @@ export async function POST(req: NextRequest, context: RouteContext) {
             analysis: q.analysis,
             image: q.image || null,
             sortOrder: q.sortOrder,
-          },
-        })
-      )
-    );
+          })),
+        });
+        imported += result.count;
+      }
+    });
 
     await prisma.auditLog.create({
       data: {
         userId: user.userId,
         action: "QUESTIONS_ADD",
-        details: JSON.stringify({ bankId, count: created.length }),
+        details: JSON.stringify({ bankId, count: imported }),
         ip: req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip") || null,
         userAgent: req.headers.get("user-agent") || null,
       },
@@ -162,8 +176,8 @@ export async function POST(req: NextRequest, context: RouteContext) {
     await invalidatePattern(`questions:*:${bankId}:*`);
 
     return Response.json({
-      data: created.map((q) => ({ id: q.id, content: q.content, type: q.type })),
-      message: `成功添加 ${created.length} 道题目`,
+      data: { imported },
+      message: `成功添加 ${imported} 道题目`,
     }, { status: 201 });
   } catch (error: any) {
     console.error("添加题目失败:", error);

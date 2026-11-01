@@ -4,7 +4,10 @@ import prisma from "@/lib/prisma";
 import { invalidatePattern } from "@/lib/redis";
 
 const VALID_TYPES = ["single", "multiple", "truefalse", "fillblank", "cloze"];
-const MAX_QUESTIONS = 500;
+// 单次导入上限。后端按分块批量写入，前端同步支持大题量编辑与分批提交
+const MAX_QUESTIONS = 5000;
+// createMany 分块大小：避免单条 SQL 参数过多（每题约 8 个参数）
+const IMPORT_CHUNK_SIZE = 500;
 
 interface NormalizedQuestion {
   type: string;
@@ -739,7 +742,7 @@ export async function POST(req: NextRequest) {
 
     if (rawQuestions.length > MAX_QUESTIONS) {
       return Response.json(
-        { error: `单次最多上传 ${MAX_QUESTIONS} 道题目` },
+        { error: `单次最多上传 ${MAX_QUESTIONS} 道题目（当前 ${rawQuestions.length} 道），请拆分成多个文件分批上传` },
         { status: 400 }
       );
     }
@@ -779,10 +782,13 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const created = await prisma.$transaction(
-        parsedQuestions.map((q) =>
-          prisma.question.create({
-            data: {
+      // 分块批量写入，比逐条 create 快一个数量级；整体保持事务原子性
+      let imported = 0;
+      await prisma.$transaction(async (tx) => {
+        for (let i = 0; i < parsedQuestions.length; i += IMPORT_CHUNK_SIZE) {
+          const chunk = parsedQuestions.slice(i, i + IMPORT_CHUNK_SIZE);
+          const result = await tx.question.createMany({
+            data: chunk.map((q) => ({
               bankId,
               type: q.type,
               content: q.content,
@@ -791,17 +797,18 @@ export async function POST(req: NextRequest) {
               analysis: q.analysis,
               image: q.image || null,
               sortOrder: q.sortOrder,
-            },
-          })
-        )
-      );
+            })),
+          });
+          imported += result.count;
+        }
+      });
 
       await invalidatePattern(`questions:*:${bankId}:*`);
 
       return Response.json({
-        message: `成功导入 ${created.length} 道题目`,
+        message: `成功导入 ${imported} 道题目`,
         data: {
-          imported: created.length,
+          imported,
           errors: errors.length > 0 ? errors : undefined,
         },
       });

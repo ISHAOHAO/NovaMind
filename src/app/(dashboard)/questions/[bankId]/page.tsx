@@ -65,6 +65,9 @@ interface AnswerResult {
   analysis: string;
 }
 
+// 侧栏一次最多渲染的题目数：大题库（数千题）时避免生成上万 DOM 节点
+const SIDEBAR_WINDOW = 200;
+
 export default function QuestionPracticePage() {
   const router = useRouter();
   const params = useParams();
@@ -72,6 +75,8 @@ export default function QuestionPracticePage() {
 
   const [questions, setQuestions] = useState<Question[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
+  // 侧栏当前渲染窗口的起始位置（仅题目数超过 SIDEBAR_WINDOW 时生效）
+  const [sidebarStart, setSidebarStart] = useState(0);
   const [loading, setLoading] = useState(true);
   const [bankTitle, setBankTitle] = useState("");
   const [mode, setMode] = useState<PracticeMode>("sequential");
@@ -193,6 +198,20 @@ export default function QuestionPracticePage() {
     setCurrentIndex(index);
     resetAnswerState();
   };
+
+  // 题目数超出窗口时，让侧栏窗口跟随当前题滚动
+  useEffect(() => {
+    if (questions.length <= SIDEBAR_WINDOW) return;
+    const margin = 30;
+    if (
+      currentIndex < sidebarStart + margin ||
+      currentIndex >= sidebarStart + SIDEBAR_WINDOW - margin
+    ) {
+      setSidebarStart(
+        Math.max(0, Math.min(currentIndex - 50, questions.length - SIDEBAR_WINDOW))
+      );
+    }
+  }, [currentIndex, questions.length, sidebarStart]);
 
   const checkAnswer = () => {
     if (!currentQuestion) return;
@@ -477,8 +496,30 @@ export default function QuestionPracticePage() {
             <X className="h-4 w-4" />
           </Button>
         </div>
+        {questions.length > SIDEBAR_WINDOW && (
+          <div className="flex items-center justify-between gap-2 border-b px-3 py-2 text-xs text-muted-foreground">
+            <Button
+              variant="outline" size="sm" className="h-6 px-2 text-xs"
+              disabled={sidebarStart === 0}
+              onClick={() => setSidebarStart(Math.max(0, sidebarStart - SIDEBAR_WINDOW))}
+            >
+              前一页
+            </Button>
+            <span>
+              第 {sidebarStart + 1}-{Math.min(sidebarStart + SIDEBAR_WINDOW, questions.length)} 题 / 共 {questions.length} 题
+            </span>
+            <Button
+              variant="outline" size="sm" className="h-6 px-2 text-xs"
+              disabled={sidebarStart + SIDEBAR_WINDOW >= questions.length}
+              onClick={() => setSidebarStart(Math.min(questions.length - SIDEBAR_WINDOW, sidebarStart + SIDEBAR_WINDOW))}
+            >
+              后一页
+            </Button>
+          </div>
+        )}
         <div className="max-h-[calc(100vh-10rem)] overflow-auto p-2">
-          {questions.map((q, i) => {
+          {questions.slice(sidebarStart, sidebarStart + SIDEBAR_WINDOW).map((q, windowIdx) => {
+            const i = sidebarStart + windowIdx;
             const qResult = allResults.find((r) => r.questionId === q.id);
             return (
               <button

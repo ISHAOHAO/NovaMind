@@ -95,6 +95,14 @@ const createEmptyQuestion = (): QuestionInput => ({
 
 type TemplateFormat = "json" | "word" | "excel";
 
+// 手动编辑器每页渲染的题目数：大题量导入时避免一次渲染数千张卡片卡死页面
+const EDITOR_PAGE_SIZE = 20;
+// 提交时每批上传的题目数，与后端单请求上限（2000）保持安全距离
+const SUBMIT_BATCH_SIZE = 500;
+// 文件解析预览列表初始渲染条数
+const PREVIEW_RENDER_LIMIT = 50;
+const ACCEPTED_EXTENSIONS = [".json", ".docx", ".doc", ".xlsx", ".xls"];
+
 export default function UploadQuestionsPage() {
   const router = useRouter();
 
@@ -114,6 +122,7 @@ export default function UploadQuestionsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitMsg, setSubmitMsg] = useState("");
   const [submitError, setSubmitError] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
 
   // Preview
   const [previewQuestion, setPreviewQuestion] = useState<QuestionInput | null>(null);
@@ -125,7 +134,12 @@ export default function UploadQuestionsPage() {
   const [fileMsg, setFileMsg] = useState("");
   const [fileMsgError, setFileMsgError] = useState(false);
   const [parsedQuestions, setParsedQuestions] = useState<QuestionInput[]>([]);
+  const [previewLimit, setPreviewLimit] = useState(PREVIEW_RENDER_LIMIT);
+  const [dragActive, setDragActive] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+
+  // Manual editor pagination (large imports)
+  const [editorPage, setEditorPage] = useState(0);
 
   // AI Upload Analysis
   const [aiAnalyzing, setAiAnalyzing] = useState(false);
@@ -147,10 +161,19 @@ export default function UploadQuestionsPage() {
     const newQ = createEmptyQuestion();
     newQ.sortOrder = questionList.length;
     setQuestionList((prev) => [...prev, newQ]);
+    // 跳到最后一页，让新题目立即可见
+    setEditorPage(Math.floor(questionList.length / EDITOR_PAGE_SIZE));
   };
 
   const removeQuestion = (id: string) => {
-    setQuestionList((prev) => prev.filter((q) => q.id !== id));
+    setQuestionList((prev) => {
+      const next = prev.filter((q) => q.id !== id);
+      // 当前页因此为空时回退一页
+      if (next.length > 0 && next.length <= editorPage * EDITOR_PAGE_SIZE) {
+        setEditorPage((p) => Math.max(0, p - 1));
+      }
+      return next;
+    });
   };
 
   const updateQuestion = (id: string, field: keyof QuestionInput, value: unknown) => {
@@ -261,10 +284,17 @@ export default function UploadQuestionsPage() {
   };
 
   // ---- File Upload & Parse ----
-  const handleFileUpload = async () => {
-    const file = fileInputRef.current?.files?.[0];
+  const handleFileUpload = async (fileOverride?: File) => {
+    const file = fileOverride instanceof File ? fileOverride : fileInputRef.current?.files?.[0];
     if (!file) {
       setFileMsg("请选择文件");
+      setFileMsgError(true);
+      return;
+    }
+
+    const lowerName = file.name.toLowerCase();
+    if (!ACCEPTED_EXTENSIONS.some((ext) => lowerName.endsWith(ext))) {
+      setFileMsg("不支持的文件格式，请上传 JSON、Word (.docx / .doc) 或 Excel (.xlsx / .xls) 文件");
       setFileMsgError(true);
       return;
     }
@@ -273,6 +303,7 @@ export default function UploadQuestionsPage() {
     setFileParsing(true);
     setFileMsg("");
     setFileMsgError(false);
+    setPreviewLimit(PREVIEW_RENDER_LIMIT);
     setAiAnalysisResult(null);
     setAiAnalysisMsg("");
 
@@ -323,8 +354,10 @@ export default function UploadQuestionsPage() {
 
   const applyParsedQuestions = () => {
     setQuestionList(parsedQuestions);
+    setEditorPage(0);
     setUploadMode("manual");
     setParsedQuestions([]);
+    setPreviewLimit(PREVIEW_RENDER_LIMIT);
     setUploadedFile(null);
     setFileMsg("");
     setAiAnalysisResult(null);
@@ -458,6 +491,7 @@ export default function UploadQuestionsPage() {
     setSubmitting(true);
     setSubmitMsg("");
     setSubmitError(false);
+    setUploadProgress(null);
 
     try {
       const bankBody = {
@@ -498,32 +532,75 @@ export default function UploadQuestionsPage() {
         sortOrder: i,
       }));
 
-      const qRes = await fetch(`/api/questions/${newBankId}/questions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify(questionsPayload),
-      });
+      // 分批上传，避免单次请求载荷过大，并展示进度
+      const total = questionsPayload.length;
+      setUploadProgress({ done: 0, total });
 
-      const qData = await qRes.json();
-      if (!qRes.ok) {
-        setSubmitMsg(qData.error || "添加题目失败，但题库已创建");
-        setSubmitError(true);
-        setSubmitting(false);
-        return;
+      let uploaded = 0;
+      for (let i = 0; i < questionsPayload.length; i += SUBMIT_BATCH_SIZE) {
+        const batch = questionsPayload.slice(i, i + SUBMIT_BATCH_SIZE);
+        const qRes = await fetch(`/api/questions/${newBankId}/questions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(batch),
+        });
+
+        if (!qRes.ok) {
+          const qData = await qRes.json().catch(() => ({}));
+          setSubmitMsg(
+            `题目上传失败（已成功 ${uploaded} 题，题库已创建）：${qData.error || "请稍后到题库中继续编辑"}`
+          );
+          setSubmitError(true);
+          setUploadProgress(null);
+          setSubmitting(false);
+          return;
+        }
+
+        uploaded += batch.length;
+        setUploadProgress({ done: uploaded, total });
       }
 
-      setSubmitMsg("题库和题目全部上传成功！");
+      setUploadProgress(null);
+      setSubmitMsg(`题库和 ${total} 道题目全部上传成功！`);
       setSubmitError(false);
       setTimeout(() => router.push(`/questions/${newBankId}`), 1500);
     } catch {
       setSubmitMsg("网络错误，请稍后重试");
       setSubmitError(true);
+      setUploadProgress(null);
     } finally {
       setSubmitting(false);
     }
   };
 
   // ---- Render Helpers ----
+  // 编辑器分页：大题量导入时只渲染当前页，保证页面流畅
+  const editorTotalPages = Math.max(1, Math.ceil(questionList.length / EDITOR_PAGE_SIZE));
+  const safeEditorPage = Math.min(editorPage, editorTotalPages - 1);
+  const pageQuestions = questionList
+    .slice(safeEditorPage * EDITOR_PAGE_SIZE, (safeEditorPage + 1) * EDITOR_PAGE_SIZE)
+    .map((q, i) => ({ q, index: safeEditorPage * EDITOR_PAGE_SIZE + i }));
+
+  const paginationControls = editorTotalPages > 1 && (
+    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+      <Button
+        variant="outline" size="sm"
+        disabled={safeEditorPage === 0}
+        onClick={() => setEditorPage(safeEditorPage - 1)}
+      >
+        上一页
+      </Button>
+      <span>第 {safeEditorPage + 1} / {editorTotalPages} 页（共 {questionList.length} 题）</span>
+      <Button
+        variant="outline" size="sm"
+        disabled={safeEditorPage >= editorTotalPages - 1}
+        onClick={() => setEditorPage(safeEditorPage + 1)}
+      >
+        下一页
+      </Button>
+    </div>
+  );
+
   const severityIcon = (severity: string) => {
     switch (severity) {
       case "error": return <XCircle className="h-4 w-4 text-red-500" />;
@@ -786,17 +863,20 @@ export default function UploadQuestionsPage() {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">题目列表 ({questionList.length})</h2>
-              <Button variant="outline" onClick={addQuestion}>
-                <Plus className="mr-2 h-4 w-4" />添加题目
-              </Button>
+              <div className="flex items-center gap-3">
+                {paginationControls}
+                <Button variant="outline" onClick={addQuestion}>
+                  <Plus className="mr-2 h-4 w-4" />添加题目
+                </Button>
+              </div>
             </div>
 
-            {questionList.map((q, qIndex) => (
+            {pageQuestions.map(({ q, index }) => (
               <Card key={q.id}>
                 <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-2">
                   <div className="flex items-center gap-2">
                     <GripVertical className="h-4 w-4 text-muted-foreground" />
-                    <Badge variant="secondary">第 {qIndex + 1} 题</Badge>
+                    <Badge variant="secondary">第 {index + 1} 题</Badge>
                     <Select value={q.type} onValueChange={(v) => updateQuestion(q.id, "type", v)}>
                       <SelectTrigger className="h-7 w-[100px] text-xs"><SelectValue /></SelectTrigger>
                       <SelectContent>
@@ -943,6 +1023,8 @@ export default function UploadQuestionsPage() {
                 </CardContent>
               </Card>
             ))}
+
+            {paginationControls}
           </div>
         </TabsContent>
 
@@ -952,16 +1034,27 @@ export default function UploadQuestionsPage() {
             <CardHeader>
               <CardTitle className="text-lg">文件导入</CardTitle>
               <CardDescription>
-                选择已按模板格式编辑好的 JSON / Word (.docx/.doc) / Excel (.xlsx/.xls) 文件进行导入。导入后可先用 AI 分析检查题目质量。
+                选择已按模板格式编辑好的 JSON / Word (.docx/.doc) / Excel (.xlsx/.xls) 文件进行导入，单次最多支持 5000 道题目。导入后可先用 AI 分析检查题目质量。
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="rounded-lg border-2 border-dashed p-8 text-center">
+              <div
+                className={`rounded-lg border-2 border-dashed p-8 text-center transition-colors ${dragActive ? "border-primary bg-primary/5" : ""}`}
+                onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+                onDragLeave={() => setDragActive(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragActive(false);
+                  if (fileParsing) return;
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) handleFileUpload(file);
+                }}
+              >
                 <FileUp className="mx-auto mb-3 h-10 w-10 text-muted-foreground" />
                 <p className="mb-2 text-sm text-muted-foreground">点击下方按钮选择文件，或拖放文件到此处</p>
                 <input
                   ref={fileInputRef} type="file" accept=".json,.docx,.doc,.xlsx,.xls"
-                  onChange={handleFileUpload} className="hidden"
+                  onChange={() => handleFileUpload()} className="hidden"
                 />
                 <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={fileParsing}>
                   {fileParsing ? (
@@ -989,7 +1082,7 @@ export default function UploadQuestionsPage() {
                     </div>
                   </div>
                   <div className="max-h-[400px] space-y-2 overflow-auto rounded-md border p-3">
-                    {parsedQuestions.map((q, i) => (
+                    {parsedQuestions.slice(0, previewLimit).map((q, i) => (
                       <div key={q.id} className="rounded-md border p-3 text-sm">
                         <div className="mb-1 flex items-center gap-2">
                           <Badge variant="outline" className="text-xs">
@@ -1018,6 +1111,14 @@ export default function UploadQuestionsPage() {
                         <p className="mt-1 text-xs text-muted-foreground">答案: {q.answer}</p>
                       </div>
                     ))}
+                    {parsedQuestions.length > previewLimit && (
+                      <Button
+                        variant="outline" size="sm" className="w-full"
+                        onClick={() => setPreviewLimit((l) => l + 50)}
+                      >
+                        显示更多（已显示 {Math.min(previewLimit, parsedQuestions.length)} / {parsedQuestions.length} 题）
+                      </Button>
+                    )}
                   </div>
                 </div>
               )}
@@ -1028,14 +1129,31 @@ export default function UploadQuestionsPage() {
 
       {/* ---- Section 4: Submit ---- */}
       <div className="flex flex-col items-center gap-3 border-t pt-6">
+        {uploadProgress && (
+          <div className="w-full max-w-md space-y-1">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full bg-primary transition-all duration-300"
+                style={{ width: `${Math.round((uploadProgress.done / Math.max(1, uploadProgress.total)) * 100)}%` }}
+              />
+            </div>
+            <p className="text-center text-xs text-muted-foreground">
+              正在上传题目 {uploadProgress.done} / {uploadProgress.total}...
+            </p>
+          </div>
+        )}
         {submitMsg && (
-          <p className={`text-sm ${submitError ? "text-red-600" : "text-green-600"}`}>{submitMsg}</p>
+          <p className={`whitespace-pre-wrap text-center text-sm ${submitError ? "text-red-600" : "text-green-600"}`}>{submitMsg}</p>
         )}
         <div className="flex gap-3">
-          <Button variant="outline" onClick={() => router.push("/questions")}>取消</Button>
+          <Button variant="outline" onClick={() => router.push("/questions")} disabled={submitting}>取消</Button>
           <Button onClick={handleSubmit} disabled={submitting} size="lg">
             <Upload className="mr-2 h-4 w-4" />
-            {submitting ? "上传中..." : "提交全部"}
+            {submitting
+              ? uploadProgress
+                ? `上传中 ${uploadProgress.done}/${uploadProgress.total}...`
+                : "上传中..."
+              : "提交全部"}
           </Button>
         </div>
       </div>
