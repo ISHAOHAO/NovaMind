@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState, useCallback, useRef } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
 import {
   Search,
@@ -11,6 +11,8 @@ import {
   ChevronRight,
   AlertTriangle,
   Loader2,
+  Download,
+  Share2,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -35,6 +37,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { cn, getDifficultyLabel, getDifficultyColor } from "@/lib/utils";
+import { useDebouncedValue } from "@/lib/use-debounce";
 
 interface QuestionBank {
   id: string;
@@ -80,8 +83,9 @@ const difficulties = [
   { value: "5", label: "困难" },
 ];
 
-export default function QuestionsPage() {
+function QuestionsListContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const [banks, setBanks] = useState<QuestionBank[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 12, total: 0, totalPages: 0 });
@@ -91,11 +95,32 @@ export default function QuestionsPage() {
   const [category, setCategory] = useState("all");
   const [difficulty, setDifficulty] = useState("all");
   const [tagsInput, setTagsInput] = useState("");
+  const [sort, setSort] = useState("newest");
+
+  // 输入防抖：避免每敲一个字符就触发一次请求
+  const debouncedSearch = useDebouncedValue(search, 300);
+  const debouncedTags = useDebouncedValue(tagsInput, 300);
+
+  // 当前用户 id（用于判断题库是否为自己上传，显示导出按钮）
+  const [currentUserId, setCurrentUserId] = useState("");
+  const [exportingId, setExportingId] = useState("");
 
   const [reportOpen, setReportOpen] = useState(false);
   const [reportBank, setReportBank] = useState<QuestionBank | null>(null);
   const [reportReason, setReportReason] = useState("");
   const [reporting, setReporting] = useState(false);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("novamind_user");
+      if (stored) {
+        const u = JSON.parse(stored) as { id?: string };
+        setCurrentUserId(u.id || "");
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const fetchBanks = useCallback(async (page = 1) => {
     const token = localStorage.getItem("novamind_token");
@@ -106,10 +131,11 @@ export default function QuestionsPage() {
       const params = new URLSearchParams();
       params.set("page", String(page));
       params.set("limit", "12");
-      if (search) params.set("search", search);
+      if (debouncedSearch) params.set("search", debouncedSearch);
       if (category && category !== "all") params.set("category", category);
       if (difficulty && difficulty !== "all") params.set("difficulty", difficulty);
-      if (tagsInput) params.set("tags", tagsInput);
+      if (debouncedTags) params.set("tags", debouncedTags);
+      params.set("sort", sort === "popular" ? "popular" : "newest");
 
       const res = await fetch(`/api/questions?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -124,14 +150,93 @@ export default function QuestionsPage() {
     } finally {
       setLoading(false);
     }
-  }, [router, search, category, difficulty, tagsInput]);
+  }, [router, debouncedSearch, category, difficulty, debouncedTags, sort]);
 
   useEffect(() => {
     fetchBanks(1);
   }, [fetchBanks]);
 
+  // 首页「查看错题」深链：/questions?filter=wrong|review → 跳到对应题库的错题/复习模式
+  const deepLinkAppliedRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkAppliedRef.current) return;
+    deepLinkAppliedRef.current = true;
+    const filter = searchParams.get("filter");
+    if (filter !== "wrong" && filter !== "review") return;
+
+    void (async () => {
+      const token = localStorage.getItem("novamind_token");
+      if (!token) return;
+      try {
+        const headers = { Authorization: `Bearer ${token}` };
+        if (filter === "wrong") {
+          const res = await fetch("/api/questions/practice/history?isCorrect=false&page=1&limit=1", { headers });
+          if (!res.ok) return;
+          const data = await res.json();
+          const bankId: string | undefined = data.data?.[0]?.question?.bank?.id;
+          if (bankId) {
+            router.replace(`/questions/${bankId}?filter=wrong`);
+          } else {
+            toast.success("暂无错题记录，继续保持！");
+          }
+        } else {
+          const res = await fetch("/api/questions/review-due", { headers });
+          if (!res.ok) return;
+          const data = await res.json();
+          const bankGroups: { bankId: string; count: number }[] = data.questionBanks || [];
+          if (!data.count || bankGroups.length === 0) {
+            toast.success("今日无到期复习");
+            return;
+          }
+          router.replace(`/questions/${bankGroups[0].bankId}?filter=review`);
+        }
+      } catch {
+        // ignore
+      }
+    })();
+  }, [router, searchParams]);
+
   const handleSearch = () => {
     fetchBanks(1);
+  };
+
+  /** 导出自己上传的题库（JSON，与上传模板兼容） */
+  const handleExportBank = async (bank: QuestionBank) => {
+    setExportingId(bank.id);
+    try {
+      const token = localStorage.getItem("novamind_token");
+      const res = await fetch(`/api/questions/${bank.id}/export`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        toast.error((data as { error?: string } | null)?.error || "导出失败");
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${bank.title || "question-bank"}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("题库已导出");
+    } catch {
+      toast.error("网络错误，导出失败");
+    } finally {
+      setExportingId("");
+    }
+  };
+
+  /** 分享公开题库：复制练习页链接 */
+  const handleShareBank = async (bank: QuestionBank) => {
+    const url = `${window.location.origin}/questions/${bank.id}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success("链接已复制，快去分享吧");
+    } catch {
+      toast.error("复制失败，请检查浏览器剪贴板权限");
+    }
   };
 
   const handleSubmitReport = async () => {
@@ -174,7 +279,7 @@ export default function QuestionsPage() {
   };
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6 pb-24">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">题库</h1>
       </div>
@@ -230,6 +335,18 @@ export default function QuestionsPage() {
               onChange={(e) => setTagsInput(e.target.value)}
             />
           </div>
+          <div className="w-[130px]">
+            <Label className="mb-1.5 block text-xs">排序</Label>
+            <Select value={sort} onValueChange={setSort}>
+              <SelectTrigger>
+                <SelectValue placeholder="排序方式" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="newest">最新</SelectItem>
+                <SelectItem value="popular">最热门</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <Button onClick={handleSearch}>
             <Search className="mr-2 h-4 w-4" />
             搜索
@@ -272,11 +389,43 @@ export default function QuestionsPage() {
                 <CardHeader>
                   <div className="flex items-start justify-between">
                     <CardTitle className="text-base line-clamp-1">{bank.title}</CardTitle>
-                    <div className="ml-2 flex shrink-0 items-center gap-1">
+                    <div className="ml-2 flex shrink-0 items-center gap-0.5">
+                      {/* 操作按钮始终可见（原 hover 才显示在触屏上不可见） */}
+                      {bank.uploader?.id === currentUserId && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 opacity-70 hover:opacity-100"
+                          title="导出题库"
+                          disabled={exportingId === bank.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleExportBank(bank);
+                          }}
+                        >
+                          {exportingId === bank.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Download className="h-3.5 w-3.5 text-muted-foreground hover:text-primary" />
+                          )}
+                        </Button>
+                      )}
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                        className="h-6 w-6 opacity-70 hover:opacity-100"
+                        title="分享题库"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleShareBank(bank);
+                        }}
+                      >
+                        <Share2 className="h-3.5 w-3.5 text-muted-foreground hover:text-primary" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 opacity-70 hover:opacity-100"
                         title="反馈题库"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -386,5 +535,21 @@ export default function QuestionsPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+export default function QuestionsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="mx-auto max-w-6xl space-y-4 pb-24">
+          <Skeleton className="h-8 w-32" />
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-64 w-full" />
+        </div>
+      }
+    >
+      <QuestionsListContent />
+    </Suspense>
   );
 }

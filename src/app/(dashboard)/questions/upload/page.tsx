@@ -2,6 +2,7 @@
 
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import toast from "react-hot-toast";
 import {
   Plus,
   Trash2,
@@ -123,6 +124,8 @@ export default function UploadQuestionsPage() {
   const [submitMsg, setSubmitMsg] = useState("");
   const [submitError, setSubmitError] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+  // 批次上传失败后的断点续传状态：记录已创建的题库与失败起始索引
+  const [uploadRetry, setUploadRetry] = useState<{ bankId: string; startIndex: number } | null>(null);
 
   // Preview
   const [previewQuestion, setPreviewQuestion] = useState<QuestionInput | null>(null);
@@ -131,6 +134,8 @@ export default function UploadQuestionsPage() {
   const [uploadMode, setUploadMode] = useState<"manual" | "file">("manual");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileParsing, setFileParsing] = useState(false);
+  const [parseWarnings, setParseWarnings] = useState<string[]>([]);
+  const [showParseWarnings, setShowParseWarnings] = useState(false);
   const [fileMsg, setFileMsg] = useState("");
   const [fileMsgError, setFileMsgError] = useState(false);
   const [parsedQuestions, setParsedQuestions] = useState<QuestionInput[]>([]);
@@ -334,8 +339,15 @@ export default function UploadQuestionsPage() {
           sortOrder: i,
         }));
         setParsedQuestions(questions);
-        const warnings = data.data.errors ? `（${data.data.errors.length} 条警告）` : "";
-        setFileMsg(`成功解析 ${questions.length} 道题目${warnings}`);
+        const warnings: string[] = Array.isArray(data.data.errors)
+          ? data.data.errors.map((e: unknown, i: number) =>
+              typeof e === "string" ? e : JSON.stringify(e)
+            )
+          : [];
+        setParseWarnings(warnings);
+        setShowParseWarnings(false);
+        const warningText = warnings.length > 0 ? `（${warnings.length} 条警告，点击下方查看明细）` : "";
+        setFileMsg(`成功解析 ${questions.length} 道题目${warningText}`);
         setFileMsgError(false);
       } else {
         setFileMsg(data.error || "解析失败");
@@ -386,10 +398,10 @@ export default function UploadQuestionsPage() {
       if (res.ok && data.data?.url) {
         updateQuestion(questionId, "image", data.data.url);
       } else {
-        alert(data.error || "图片上传失败");
+        toast.error(data.error || "图片上传失败");
       }
     } catch {
-      alert("图片上传网络错误");
+      toast.error("图片上传网络错误");
     } finally {
       setImageUploading((prev) => ({ ...prev, [questionId]: false }));
     }
@@ -520,7 +532,34 @@ export default function UploadQuestionsPage() {
 
       const newBankId = bankData.data.id;
 
-      const questionsPayload = questionList.map((q, i) => ({
+      // 分批上传，避免单次请求载荷过大，并展示进度；失败时记录断点支持续传
+      const total = questionList.length;
+      setUploadProgress({ done: 0, total });
+
+      const finished = await uploadQuestionBatches(newBankId, 0, total);
+      if (!finished) return;
+
+      setUploadProgress(null);
+      setUploadRetry(null);
+      setSubmitMsg(`题库和 ${total} 道题目全部上传成功！`);
+      setSubmitError(false);
+      setTimeout(() => router.push(`/questions/${newBankId}`), 1500);
+    } catch {
+      setSubmitMsg("网络错误，请稍后重试");
+      setSubmitError(true);
+      setUploadProgress(null);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /** 从 startIndex 起分批上传题目；失败时记录断点并返回 false */
+  const uploadQuestionBatches = async (bankId: string, startIndex: number, total: number): Promise<boolean> => {
+    const token = localStorage.getItem("novamind_token");
+    if (!token) return false;
+
+    for (let i = startIndex; i < questionList.length; i += SUBMIT_BATCH_SIZE) {
+      const batch = questionList.slice(i, i + SUBMIT_BATCH_SIZE).map((q, j) => ({
         type: q.type,
         content: q.content.trim(),
         options: q.type === "truefalse" || q.type === "fillblank"
@@ -529,43 +568,52 @@ export default function UploadQuestionsPage() {
         answer: q.answer.trim(),
         analysis: q.analysis.trim(),
         image: q.image || undefined,
-        sortOrder: i,
+        sortOrder: i + j,
       }));
+      const qRes = await fetch(`/api/questions/${bankId}/questions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(batch),
+      });
 
-      // 分批上传，避免单次请求载荷过大，并展示进度
-      const total = questionsPayload.length;
-      setUploadProgress({ done: 0, total });
-
-      let uploaded = 0;
-      for (let i = 0; i < questionsPayload.length; i += SUBMIT_BATCH_SIZE) {
-        const batch = questionsPayload.slice(i, i + SUBMIT_BATCH_SIZE);
-        const qRes = await fetch(`/api/questions/${newBankId}/questions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify(batch),
-        });
-
-        if (!qRes.ok) {
-          const qData = await qRes.json().catch(() => ({}));
-          setSubmitMsg(
-            `题目上传失败（已成功 ${uploaded} 题，题库已创建）：${qData.error || "请稍后到题库中继续编辑"}`
-          );
-          setSubmitError(true);
-          setUploadProgress(null);
-          setSubmitting(false);
-          return;
-        }
-
-        uploaded += batch.length;
-        setUploadProgress({ done: uploaded, total });
+      if (!qRes.ok) {
+        const qData = await qRes.json().catch(() => ({}));
+        setUploadRetry({ bankId, startIndex: i });
+        setSubmitMsg(
+          `第 ${i + 1} 题起上传失败（已成功 ${i} 题，题库已创建）：${qData.error || "网络异常"}。可点击"从失败处继续上传"重试。`
+        );
+        setSubmitError(true);
+        setUploadProgress(null);
+        return false;
       }
 
-      setUploadProgress(null);
-      setSubmitMsg(`题库和 ${total} 道题目全部上传成功！`);
-      setSubmitError(false);
-      setTimeout(() => router.push(`/questions/${newBankId}`), 1500);
+      setUploadProgress({ done: Math.min(i + SUBMIT_BATCH_SIZE, total), total });
+    }
+    return true;
+  };
+
+  /** 断点续传：从上次失败批次继续上传剩余题目 */
+  const handleResumeUpload = async () => {
+    if (!uploadRetry || submitting) return;
+    setSubmitting(true);
+    setSubmitMsg("");
+    setSubmitError(false);
+    setUploadProgress({ done: uploadRetry.startIndex, total: questionList.length });
+    try {
+      const finished = await uploadQuestionBatches(
+        uploadRetry.bankId,
+        uploadRetry.startIndex,
+        questionList.length
+      );
+      if (finished) {
+        setUploadProgress(null);
+        setUploadRetry(null);
+        setSubmitMsg(`剩余题目上传成功，共 ${questionList.length} 道题目已全部上传！`);
+        setSubmitError(false);
+        setTimeout(() => router.push(`/questions/${uploadRetry.bankId}`), 1500);
+      }
     } catch {
-      setSubmitMsg("网络错误，请稍后重试");
+      setSubmitMsg("网络错误，请重试续传");
       setSubmitError(true);
       setUploadProgress(null);
     } finally {
@@ -1063,10 +1111,36 @@ export default function UploadQuestionsPage() {
                     <><FileUp className="mr-2 h-4 w-4" />选择文件</>
                   )}
                 </Button>
+                {fileParsing && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    正在解析文件，题量较大时可能需要数十秒，请勿关闭页面...
+                  </p>
+                )}
               </div>
 
               {fileMsg && (
                 <p className={`whitespace-pre-wrap text-sm ${fileMsgError ? "text-red-600" : "text-green-600"}`}>{fileMsg}</p>
+              )}
+
+              {/* 解析警告明细 */}
+              {parseWarnings.length > 0 && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium"
+                    onClick={() => setShowParseWarnings((v) => !v)}
+                  >
+                    <span>解析警告（{parseWarnings.length} 条）</span>
+                    <span className="text-xs">{showParseWarnings ? "收起" : "展开"}</span>
+                  </button>
+                  {showParseWarnings && (
+                    <ul className="max-h-48 space-y-1 overflow-auto px-3 pb-2 text-xs">
+                      {parseWarnings.map((w, i) => (
+                        <li key={i} className="whitespace-pre-wrap">• {w}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               )}
 
               {/* Parsed questions preview */}
@@ -1144,6 +1218,12 @@ export default function UploadQuestionsPage() {
         )}
         {submitMsg && (
           <p className={`whitespace-pre-wrap text-center text-sm ${submitError ? "text-red-600" : "text-green-600"}`}>{submitMsg}</p>
+        )}
+        {uploadRetry && !submitting && (
+          <Button variant="destructive" onClick={handleResumeUpload}>
+            <Upload className="mr-2 h-4 w-4" />
+            从第 {uploadRetry.startIndex + 1} 题继续上传
+          </Button>
         )}
         <div className="flex gap-3">
           <Button variant="outline" onClick={() => router.push("/questions")} disabled={submitting}>取消</Button>

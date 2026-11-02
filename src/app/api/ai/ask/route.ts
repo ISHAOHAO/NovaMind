@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { authenticateRequest } from "@/lib/auth";
-import { analyzeQuestion, explainAnswer, generateSimilarQuestion } from "@/lib/ai";
+import {
+  analyzeQuestion,
+  explainAnswer,
+  generateSimilarQuestion,
+  streamAiContent,
+  buildQuestionPrompt,
+} from "@/lib/ai";
 import { askAiSchema } from "@/lib/validations";
 import { getSystemConfig } from "@/lib/config";
 import { checkAndIncrementAiUsage, refundAiUsage } from "@/lib/ai-usage";
@@ -23,6 +29,7 @@ export async function POST(request: NextRequest) {
     }
 
     const { questionId, action } = parsed.data;
+    const stream = body.stream === true;
 
     const aiEnabled = await getSystemConfig("ai_enabled");
     if (aiEnabled !== "true") {
@@ -63,6 +70,57 @@ export async function POST(request: NextRequest) {
 
     if (!question) {
       return NextResponse.json({ error: "题目不存在" }, { status: 404 });
+    }
+
+    // 流式模式：SSE 逐段返回，额度逻辑与非流式一致（失败自动退款）
+    if (stream) {
+      const { prompt, systemPrompt } = buildQuestionPrompt(
+        action,
+        question.content,
+        question.answer,
+        question.analysis ?? undefined
+      );
+
+      const encoder = new TextEncoder();
+      const sseStream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const send = (event: string, data: unknown) => {
+            controller.enqueue(
+              encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+            );
+          };
+          try {
+            for await (const delta of streamAiContent(prompt, systemPrompt)) {
+              send("delta", { delta });
+            }
+            send("done", { usage });
+          } catch (error) {
+            console.error("[AI Ask Stream] Error:", error);
+            // 流式失败同样退还本次额度
+            if (isTrialUser) {
+              try {
+                await refundAiUsage(user.userId);
+              } catch {
+                // 退款失败不影响错误返回
+              }
+            }
+            send("error", {
+              error: error instanceof Error ? error.message : "AI 请求失败",
+            });
+          } finally {
+            controller.close();
+          }
+        },
+      });
+
+      return new Response(sseStream, {
+        headers: {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        },
+      });
     }
 
     let result;

@@ -5,14 +5,14 @@ import toast from "react-hot-toast";
 import {
   CheckCircle,
   XCircle,
-  ChevronLeft,
-  ChevronRight,
   AlertTriangle,
   Loader2,
   Eye,
   MessageSquareText,
+  Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -42,6 +42,8 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { formatDate } from "@/lib/utils";
+import { useDebouncedValue } from "@/lib/use-debounce";
+import { SharedPagination } from "@/components/shared/pagination";
 
 interface Report {
   id: string;
@@ -76,6 +78,8 @@ export default function ReportsPage() {
   const [reports, setReports] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("PENDING");
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [total, setTotal] = useState(0);
@@ -96,6 +100,7 @@ export default function ReportsPage() {
       params.set("page", String(page));
       params.set("limit", "20");
       if (statusFilter !== "all") params.set("status", statusFilter);
+      if (debouncedSearch) params.set("search", debouncedSearch);
 
       const res = await fetch(`/api/admin/reports?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -110,7 +115,7 @@ export default function ReportsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, statusFilter]);
+  }, [page, statusFilter, debouncedSearch]);
 
   useEffect(() => {
     fetchReports();
@@ -156,7 +161,16 @@ export default function ReportsPage() {
           <CardTitle className="text-lg">反馈列表</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="mb-4">
+          <div className="mb-4 flex flex-wrap items-center gap-3">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="搜索举报人邮箱或题库标题..."
+                className="pl-9"
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              />
+            </div>
             <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(1); }}>
               <SelectTrigger className="w-[140px]">
                 <SelectValue placeholder="状态筛选" />
@@ -261,33 +275,13 @@ export default function ReportsPage() {
                 </TableBody>
               </Table>
 
-              {totalPages > 1 && (
-                <div className="mt-4 flex items-center justify-between">
-                  <p className="text-sm text-muted-foreground">
-                    共 {total} 条，第 {page} / {totalPages} 页
-                  </p>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={page <= 1}
-                      onClick={() => setPage(page - 1)}
-                    >
-                      <ChevronLeft className="mr-1 h-4 w-4" />
-                      上一页
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={page >= totalPages}
-                      onClick={() => setPage(page + 1)}
-                    >
-                      下一页
-                      <ChevronRight className="ml-1 h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              )}
+              <SharedPagination
+                page={page}
+                totalPages={totalPages}
+                total={total}
+                pageSize={20}
+                onPageChange={(p) => setPage(p)}
+              />
             </>
           )}
         </CardContent>

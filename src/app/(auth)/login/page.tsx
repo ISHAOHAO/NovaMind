@@ -1,7 +1,7 @@
 "use client"
 
-import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { Suspense, useState } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import toast from "react-hot-toast"
 import { Button } from "@/components/ui/button"
@@ -16,9 +16,12 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Code2, Loader2 } from "lucide-react"
+import { PageLoading } from "@/components/ui/loading-screen"
+import { persistSession } from "@/lib/auth-client"
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [loading, setLoading] = useState(false)
   const [account, setAccount] = useState("")
   const [password, setPassword] = useState("")
@@ -51,12 +54,17 @@ export default function LoginPage() {
         throw new Error(data.error || "登录失败")
       }
 
-      localStorage.setItem("novamind_token", data.token)
-      localStorage.setItem("novamind_user", JSON.stringify(data.user))
+      persistSession(data.token, data.user)
 
       toast.success("登录成功")
 
-      router.push("/dashboard")
+      // 支持登录后回跳原页面（由 middleware/401 拦截写入 redirect 参数）
+      const redirect = searchParams.get("redirect")
+      const safeRedirect =
+        redirect && redirect.startsWith("/") && !redirect.startsWith("//")
+          ? redirect
+          : "/dashboard"
+      router.push(safeRedirect)
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : "登录失败，请稍后重试"
@@ -128,5 +136,13 @@ export default function LoginPage() {
         </CardFooter>
       </form>
     </Card>
+  )
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<PageLoading />}>
+      <LoginForm />
+    </Suspense>
   )
 }

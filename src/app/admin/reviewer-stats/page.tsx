@@ -63,8 +63,17 @@ export default function ReviewerStatsPage() {
     return `${mins}分${secs}秒`;
   };
 
+  // 用户名为空时显示 "用户 <userId 前 8 位>" 兜底
+  const getDisplayName = (s: ReviewerStats) =>
+    s.userName || `用户 ${s.userId.slice(0, 8)}`;
+
+  const getApprovalRate = (s: ReviewerStats) =>
+    s.totalReviewed > 0
+      ? `${Math.round((s.totalApproved / s.totalReviewed) * 100)}%`
+      : "-";
+
   const chartData = stats.map((s) => ({
-    name: s.userName,
+    name: getDisplayName(s),
     通过: s.totalApproved,
     驳回: s.totalRejected,
     需修改: s.totalNeedsRevision,
@@ -111,7 +120,7 @@ export default function ReviewerStatsPage() {
               <Card key={s.userId}>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm text-muted-foreground">
-                    {s.userName}
+                    {getDisplayName(s)}
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
@@ -155,13 +164,14 @@ export default function ReviewerStatsPage() {
                     <TableHead className="text-right">通过</TableHead>
                     <TableHead className="text-right">驳回</TableHead>
                     <TableHead className="text-right">需修改</TableHead>
+                    <TableHead className="text-right">通过率</TableHead>
                     <TableHead className="text-right">平均审核时间</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {stats.map((s) => (
                     <TableRow key={s.userId}>
-                      <TableCell className="font-medium">{s.userName}</TableCell>
+                      <TableCell className="font-medium">{getDisplayName(s)}</TableCell>
                       <TableCell className="text-right">{s.totalReviewed}</TableCell>
                       <TableCell className="text-right text-green-600">
                         {s.totalApproved}
@@ -171,6 +181,9 @@ export default function ReviewerStatsPage() {
                       </TableCell>
                       <TableCell className="text-right text-orange-600">
                         {s.totalNeedsRevision}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {getApprovalRate(s)}
                       </TableCell>
                       <TableCell className="text-right">
                         {formatTime(s.avgReviewTime)}

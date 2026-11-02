@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   Users,
   UserPlus,
@@ -16,6 +17,8 @@ import {
   PieChart,
   ArrowRight,
   RotateCw,
+  LogIn,
+  ClipboardList,
 } from "lucide-react";
 import {
   LineChart,
@@ -85,9 +88,24 @@ const actionLabels: Record<string, string> = {
   UPDATE_SETTINGS: "更新设置",
   FORCE_ACTIVATE: "强制激活",
   LOGIN: "登录",
+  LOGOUT: "退出",
+  REGISTER: "注册",
   VERIFY_EMAIL: "邮箱验证",
   CHANGE_ROLE: "角色变更",
   ACTIVATE_USER: "激活用户",
+  ACTIVATE_ACCOUNT: "激活账号",
+  CHANGE_PASSWORD: "修改密码",
+  RESOLVE_REPORT: "处理反馈",
+  DISMISS_REPORT: "驳回反馈",
+  EXAM_ABANDON: "放弃考试",
+  MANAGE_BANK: "管理题库",
+  QUESTION_REVIEW: "题库审核",
+  QUESTION_BANK_CREATE: "创建题库",
+  QUESTION_BANK_UPDATE: "更新题库",
+  QUESTION_BANK_DELETE: "删除题库",
+  QUESTIONS_ADD: "添加题目",
+  QUESTION_UPDATE: "更新题目",
+  QUESTION_DELETE: "删除题目",
 };
 
 const actionVariants: Record<string, string> = {
@@ -104,6 +122,21 @@ const actionVariants: Record<string, string> = {
   VERIFY_EMAIL: "default",
   CHANGE_ROLE: "secondary",
   ACTIVATE_USER: "default",
+  LOGOUT: "outline",
+  REGISTER: "outline",
+  ACTIVATE_ACCOUNT: "default",
+  CHANGE_PASSWORD: "secondary",
+  RESOLVE_REPORT: "success",
+  DISMISS_REPORT: "destructive",
+  EXAM_ABANDON: "warning",
+  MANAGE_BANK: "secondary",
+  QUESTION_REVIEW: "secondary",
+  QUESTION_BANK_CREATE: "default",
+  QUESTION_BANK_UPDATE: "secondary",
+  QUESTION_BANK_DELETE: "destructive",
+  QUESTIONS_ADD: "default",
+  QUESTION_UPDATE: "secondary",
+  QUESTION_DELETE: "destructive",
 };
 
 const roleLabels: Record<string, string> = {
@@ -183,6 +216,26 @@ export default function AdminDashboardPage() {
       href: "/admin/activation-codes",
     },
   ];
+
+  // 今日登录 / 今日答题（API 未返回对应字段时不渲染该卡）
+  if (stats?.todayLogins !== undefined) {
+    statCards.push({
+      title: "今日登录",
+      icon: LogIn,
+      value: stats.todayLogins,
+      color: "text-indigo-600 bg-indigo-50",
+      href: "/admin/risk-control",
+    });
+  }
+  if (stats?.todayRecords !== undefined) {
+    statCards.push({
+      title: "今日答题",
+      icon: ClipboardList,
+      value: stats.todayRecords,
+      color: "text-teal-600 bg-teal-50",
+      href: "/admin/questions",
+    });
+  }
 
   const rolePie = stats
     ? [
@@ -356,9 +409,9 @@ export default function AdminDashboardPage() {
                 </CardTitle>
                 <CardDescription>最近注册的5位用户</CardDescription>
               </div>
-              <a href="/admin/users" className="shrink-0 text-xs text-muted-foreground hover:text-foreground">
+              <Link href="/admin/users" className="shrink-0 text-xs text-muted-foreground hover:text-foreground">
                 查看全部 →
-              </a>
+              </Link>
             </div>
           </CardHeader>
           <CardContent>
@@ -402,9 +455,9 @@ export default function AdminDashboardPage() {
                 <Clock className="h-5 w-5" />
                 最近操作
               </CardTitle>
-              <a href="/admin/logs" className="shrink-0 text-xs text-muted-foreground hover:text-foreground">
+              <Link href="/admin/logs" className="shrink-0 text-xs text-muted-foreground hover:text-foreground">
                 查看全部 →
-              </a>
+              </Link>
             </div>
           </CardHeader>
           <CardContent>
@@ -452,7 +505,7 @@ export default function AdminDashboardPage() {
               { label: "系统设置", desc: "配置系统参数", href: "/admin/settings", color: "border-l-purple-500" },
               { label: "操作日志", desc: "查看系统操作记录", href: "/admin/logs", color: "border-l-cyan-500" },
             ].map((action) => (
-              <a
+              <Link
                 key={action.href}
                 href={action.href}
                 className={cn(
@@ -463,7 +516,7 @@ export default function AdminDashboardPage() {
                 <h3 className="text-sm font-medium">{action.label}</h3>
                 <p className="text-xs text-muted-foreground">{action.desc}</p>
                 <ArrowRight className="mt-1 h-3 w-3 text-muted-foreground" />
-              </a>
+              </Link>
             ))}
           </CardContent>
         </Card>

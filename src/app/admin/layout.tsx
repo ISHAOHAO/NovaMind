@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { LoadingScreen } from "@/components/ui/loading-screen";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 interface UserInfo {
   id: string;
@@ -43,6 +44,7 @@ const adminNavItems: NavItem[] = [
   { href: "/admin/users", label: "用户管理", icon: Users },
   { href: "/admin/activation-codes", label: "激活码管理", icon: Key },
   { href: "/admin/questions", label: "题库审核", icon: FileQuestion },
+  { href: "/admin/review-templates", label: "审核模板", icon: FileText },
   { href: "/admin/reports", label: "反馈管理", icon: MessageSquareText },
   { href: "/admin/reviewer-stats", label: "审核绩效", icon: BarChart3 },
   { href: "/admin/risk-control", label: "登录风控", icon: ShieldAlert },
@@ -90,11 +92,30 @@ export default function AdminLayout({
     }
   }, [router]);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      const token = localStorage.getItem("novamind_token");
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+    } catch {
+      // 忽略网络错误，仍然清理本地会话
+    }
     localStorage.removeItem("novamind_token");
     localStorage.removeItem("novamind_user");
     router.replace("/login");
   };
+
+  // 根据当前路径映射页面标题（顶栏面包屑）
+  const currentNavItem =
+    adminNavItems.find((item) =>
+      item.href === "/admin"
+        ? pathname === "/admin"
+        : pathname.startsWith(item.href)
+    ) || null;
 
   if (!mounted) return <LoadingScreen message="加载管理后台..." />;
 
@@ -197,7 +218,15 @@ export default function AdminLayout({
               <Menu className="h-5 w-5" />
             )}
           </Button>
+          <div className="flex min-w-0 items-center gap-2 text-sm">
+            <span className="hidden text-muted-foreground sm:inline">管理后台</span>
+            <span className="hidden text-muted-foreground sm:inline">/</span>
+            <span className="truncate font-medium">
+              {currentNavItem?.label || "管理后台"}
+            </span>
+          </div>
           <div className="flex-1" />
+          <ThemeToggle />
         </header>
 
         <main className="flex-1 overflow-auto p-6">{children}</main>

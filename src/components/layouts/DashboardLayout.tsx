@@ -16,6 +16,7 @@ import {
   Timer,
   StickyNote,
   BarChart3,
+  Star,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,6 +30,8 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import { LoadingScreen } from "@/components/ui/loading-screen";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { authFetch, clearSession, redirectToLogin } from "@/lib/auth-client";
 
 interface UserInfo {
   id: string;
@@ -50,7 +53,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
     setMounted(true);
     const token = localStorage.getItem("novamind_token");
     if (!token) {
-      router.replace("/login");
+      redirectToLogin();
       return;
     }
     try {
@@ -61,6 +64,8 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
     } catch {
       // ignore
     }
+    // 会话探活：token 过期/被吊销时统一清理并跳转登录（携带回跳地址）
+    authFetch("/api/auth/me").catch(() => {});
   }, [router]);
 
   const handleLogout = useCallback(async () => {
@@ -75,8 +80,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
     } catch {
       // ignore
     }
-    localStorage.removeItem("novamind_token");
-    localStorage.removeItem("novamind_user");
+    clearSession();
     router.replace("/login");
   }, [router]);
 
@@ -87,6 +91,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   const navItems = [
     { href: "/dashboard", label: "首页", icon: Home },
     { href: "/questions", label: "题库", icon: BookOpen },
+    { href: "/favorites", label: "我的收藏", icon: Star },
     { href: "/exams", label: "模拟考试", icon: Timer },
     { href: "/notes", label: "笔记", icon: StickyNote },
     { href: "/analytics", label: "学习分析", icon: BarChart3 },
@@ -183,7 +188,10 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             <span className="font-semibold">NovaMind</span>
           </div>
 
-          <DropdownMenu>
+          <div className="flex items-center gap-1">
+            <ThemeToggle />
+
+            <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" className="flex items-center gap-2">
                 <Avatar className="h-7 w-7">
@@ -224,6 +232,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          </div>
         </header>
 
         {/* Content */}

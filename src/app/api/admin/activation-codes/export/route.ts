@@ -15,6 +15,7 @@ export const GET = requireAdmin(async (req: NextRequest) => {
     const { searchParams } = new URL(req.url);
     const batchId = searchParams.get("batchId") || undefined;
     const status = searchParams.get("status") || undefined;
+    const search = searchParams.get("search") || "";
 
     const where: Prisma.ActivationCodeWhereInput = {};
 
@@ -23,6 +24,9 @@ export const GET = requireAdmin(async (req: NextRequest) => {
     }
     if (status) {
       where.status = status as any;
+    }
+    if (search) {
+      where.code = { contains: search, mode: "insensitive" };
     }
 
     const codes = await prisma.activationCode.findMany({

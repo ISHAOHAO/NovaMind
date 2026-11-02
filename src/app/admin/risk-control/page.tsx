@@ -34,8 +34,19 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { cn, formatDate } from "@/lib/utils";
+import { SharedPagination } from "@/components/shared/pagination";
 import toast from "react-hot-toast";
 
 const CHART_COLORS = {
@@ -72,6 +83,7 @@ interface Overview {
   topFailedIps: { ip: string; count: number }[];
   topFailedEmails: { email: string; count: number }[];
   hourlyAttempts: { hour: string; count: number; failed: number }[];
+  dailyTrend: { date: string; count: number; failed: number }[];
 }
 
 interface IpInfo {
@@ -124,6 +136,7 @@ export default function RiskControlPage() {
   const [blockReason, setBlockReason] = useState("");
   const [blockDuration, setBlockDuration] = useState(24);
   const [blocking, setBlocking] = useState(false);
+  const [unblockIp, setUnblockIp] = useState<string | null>(null);
   const [tab, setTab] = useState<"overview" | "ips" | "attempts">("overview");
 
   const loadOverview = useCallback(async () => {
@@ -211,6 +224,11 @@ export default function RiskControlPage() {
     } catch {
       toast.error("操作失败");
     }
+  };
+
+  const handleConfirmUnblock = () => {
+    if (unblockIp) handleUnblock(unblockIp);
+    setUnblockIp(null);
   };
 
   const chartData = (overview?.hourlyAttempts || [])
@@ -335,21 +353,7 @@ export default function RiskControlPage() {
                   <Skeleton className="h-72 w-full" />
                 ) : (
                   <ResponsiveContainer width="100%" height={280}>
-                    <LineChart data={(overview?.hourlyAttempts || [])
-                      .slice()
-                      .reverse()
-                      .reduce((acc: { date: string; failed: number }[], h) => {
-                        const day = h.hour.slice(0, 10);
-                        const existing = acc.find((a) => a.date === day);
-                        if (existing) {
-                          existing.failed += h.failed;
-                        } else {
-                          acc.push({ date: day, failed: h.failed });
-                        }
-                        return acc;
-                      }, [])
-                      .slice(-7)
-                    }>
+                    <LineChart data={overview?.dailyTrend || []}>
                       <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                       <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(v) => v.slice(5)} />
                       <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
@@ -501,7 +505,7 @@ export default function RiskControlPage() {
                               <Button
                                 size="sm"
                                 variant="outline"
-                                onClick={() => handleUnblock(row.ip)}
+                                onClick={() => setUnblockIp(row.ip)}
                               >
                                 <Unlock className="mr-1 h-3.5 w-3.5" />
                                 解封
@@ -523,26 +527,13 @@ export default function RiskControlPage() {
                     </tbody>
                   </table>
                 </div>
-                {ipsTotal > ipsLimit && (
-                  <div className="mt-4 flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">
-                      共 {ipsTotal} 条，第 {ipsPage}/{Math.ceil(ipsTotal / ipsLimit)} 页
-                    </span>
-                    <div className="flex gap-2">
-                      <Button variant="outline" size="sm" disabled={ipsPage <= 1} onClick={() => setIpsPage(ipsPage - 1)}>
-                        上一页
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={ipsPage >= Math.ceil(ipsTotal / ipsLimit)}
-                        onClick={() => setIpsPage(ipsPage + 1)}
-                      >
-                        下一页
-                      </Button>
-                    </div>
-                  </div>
-                )}
+                <SharedPagination
+                  page={ipsPage}
+                  totalPages={Math.ceil(ipsTotal / ipsLimit)}
+                  total={ipsTotal}
+                  pageSize={ipsLimit}
+                  onPageChange={(p) => setIpsPage(p)}
+                />
               </>
             )}
           </CardContent>
@@ -652,6 +643,24 @@ export default function RiskControlPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={unblockIp !== null}
+        onOpenChange={(open) => { if (!open) setUnblockIp(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认解封 IP</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定要解封 IP <span className="font-mono font-medium">{unblockIp}</span> 吗？解封后该 IP 可正常登录系统。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmUnblock}>确认解封</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

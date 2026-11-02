@@ -38,8 +38,9 @@ export const GET = requireAdmin(async (req: NextRequest) => {
       totalApproved: number;
       totalRejected: number;
       totalNeedsRevision: number;
-      totalReviewTime: number;
-      reviewCount: number;
+      // 加权平均：Σ(日均时长×当日审核数) / Σ当日审核数
+      totalWeightedTime: number;
+      totalWeight: number;
     }>();
 
     stats.forEach((s) => {
@@ -52,8 +53,8 @@ export const GET = requireAdmin(async (req: NextRequest) => {
           totalApproved: 0,
           totalRejected: 0,
           totalNeedsRevision: 0,
-          totalReviewTime: 0,
-          reviewCount: 0,
+          totalWeightedTime: 0,
+          totalWeight: 0,
         };
         userStatsMap.set(s.userId, entry);
       }
@@ -61,9 +62,9 @@ export const GET = requireAdmin(async (req: NextRequest) => {
       entry.totalApproved += s.approvedCount;
       entry.totalRejected += s.rejectedCount;
       entry.totalNeedsRevision += s.needsRevisionCount;
-      if (s.avgReviewTime > 0) {
-        entry.totalReviewTime += s.avgReviewTime;
-        entry.reviewCount++;
+      if (s.avgReviewTime > 0 && s.reviewedCount > 0) {
+        entry.totalWeightedTime += s.avgReviewTime * s.reviewedCount;
+        entry.totalWeight += s.reviewedCount;
       }
     });
 
@@ -89,8 +90,9 @@ export const GET = requireAdmin(async (req: NextRequest) => {
       totalApproved: entry.totalApproved,
       totalRejected: entry.totalRejected,
       totalNeedsRevision: entry.totalNeedsRevision,
-      avgReviewTime: entry.reviewCount > 0
-        ? Math.round(entry.totalReviewTime / entry.reviewCount)
+      // 按总审核次数加权，避免"每日平均再平均"造成稀释
+      avgReviewTime: entry.totalWeight > 0
+        ? Math.round(entry.totalWeightedTime / entry.totalWeight)
         : 0,
     }));
 

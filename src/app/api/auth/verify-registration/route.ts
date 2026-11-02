@@ -1,6 +1,9 @@
 import { NextRequest } from "next/server";
+import { randomUUID } from "crypto";
 import prisma from "@/lib/prisma";
 import { redis } from "@/lib/redis";
+import { signToken } from "@/lib/auth";
+import { getDeviceFingerprint, getUserAgent } from "@/lib/device";
 
 const MAX_ATTEMPTS = 5;
 const ATTEMPT_WINDOW_S = 1800;
@@ -80,7 +83,49 @@ export async function POST(req: NextRequest) {
     await redis.del(key);
     await redis.del(attemptKey);
 
-    return Response.json({ message: "邮箱验证成功，请登录" });
+    // 验证成功后直接签发会话，前端可自动登录，免去重复输入账密
+    const ip =
+      req.headers.get("x-forwarded-for") ||
+      req.headers.get("x-real-ip") ||
+      "unknown";
+    const userAgent = getUserAgent(req);
+    const session = await prisma.userSession.create({
+      data: {
+        userId: user.id,
+        token: randomUUID(),
+        deviceId: getDeviceFingerprint(req) || "unknown",
+        ip,
+        userAgent,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    const token = signToken({
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      sessionId: session.id,
+    });
+
+    await prisma.userSession.update({
+      where: { id: session.id },
+      data: { token },
+    });
+
+    return Response.json({
+      message: "邮箱验证成功",
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        name: user.name,
+        avatar: user.avatar,
+        role: user.role,
+        isActivated: user.isActivated,
+        emailVerified: true,
+      },
+    });
   } catch (error) {
     console.error("注册验证失败:", error);
     return Response.json(

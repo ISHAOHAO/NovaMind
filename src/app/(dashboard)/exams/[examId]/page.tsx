@@ -55,6 +55,12 @@ interface RankingItem {
   duration: number | null;
 }
 
+/** 创建考试时写入 settings 的参数（见 POST /api/exams），用于"再考一次" */
+interface ExamSettings {
+  bankIds?: unknown;
+  originalCount?: unknown;
+}
+
 export default function ExamTakingPage() {
   const router = useRouter();
   const params = useParams();
@@ -82,6 +88,10 @@ export default function ExamTakingPage() {
   const [rankings, setRankings] = useState<RankingItem[]>([]);
   const [currentUserRank, setCurrentUserRank] = useState<RankingItem | null>(null);
   const [rankingsLoading, setRankingsLoading] = useState(false);
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const [showAbandonConfirm, setShowAbandonConfirm] = useState(false);
+  const [abandoning, setAbandoning] = useState(false);
+  const [retaking, setRetaking] = useState(false);
 
   const token = typeof window !== "undefined" ? localStorage.getItem("novamind_token") : null;
 
@@ -249,6 +259,90 @@ export default function ExamTakingPage() {
     }
   };
 
+  const handleAbandonExam = async () => {
+    if (!token || !exam) return;
+    setAbandoning(true);
+    try {
+      const res = await fetch(`/api/exams/${examId}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ action: "abandon" }),
+      });
+      if (res.ok) {
+        stopTimer();
+        toast.success("考试已放弃");
+        router.push("/exams");
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "操作失败");
+      }
+    } catch {
+      toast.error("操作失败");
+    } finally {
+      setAbandoning(false);
+    }
+  };
+
+  const canRetake = (() => {
+    if (!exam) return false;
+    const settings = exam.settings as ExamSettings | null;
+    return Boolean(
+      settings &&
+      Array.isArray(settings.bankIds) &&
+      settings.bankIds.length > 0 &&
+      typeof settings.originalCount === "number" &&
+      settings.originalCount > 0
+    );
+  })();
+
+  const handleRetake = async () => {
+    if (!token || !exam) return;
+    const settings = exam.settings as ExamSettings | null;
+    if (
+      !settings ||
+      !Array.isArray(settings.bankIds) ||
+      settings.bankIds.length === 0 ||
+      typeof settings.originalCount !== "number" ||
+      settings.originalCount <= 0
+    ) {
+      return;
+    }
+
+    setRetaking(true);
+    try {
+      const res = await fetch("/api/exams", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          title: exam.title,
+          description: exam.description || undefined,
+          bankIds: settings.bankIds,
+          questionCount: settings.originalCount,
+          durationMinutes: exam.durationMinutes,
+          difficulty: exam.difficulty,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success("新考试已创建");
+        router.push(`/exams/${data.exam.id}`);
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "创建失败");
+      }
+    } catch {
+      toast.error("创建失败");
+    } finally {
+      setRetaking(false);
+    }
+  };
+
   const getAnswerForQuestion = (questionId: string) => {
     return answers[questionId] || "";
   };
@@ -355,11 +449,6 @@ export default function ExamTakingPage() {
                       ))}
                     </div>
                   )}
-                  {eq.question.answer && (
-                    <p className="text-xs text-green-600 mt-1">
-                      答案: {eq.question.answer}
-                    </p>
-                  )}
                 </div>
               ))}
               {exam.totalQuestions > 3 && (
@@ -402,7 +491,7 @@ export default function ExamTakingPage() {
         <div className="space-y-2 mb-4 shrink-0">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <Button variant="ghost" size="sm" onClick={() => router.push("/exams")}>
+              <Button variant="ghost" size="sm" onClick={() => setShowExitConfirm(true)}>
                 <ChevronLeft className="mr-1 h-4 w-4" />
                 退出
               </Button>
@@ -426,6 +515,7 @@ export default function ExamTakingPage() {
               <Button
                 size="sm"
                 variant="outline"
+                className="lg:hidden"
                 onClick={() => setSidebarOpen(!sidebarOpen)}
               >
                 <List className="h-4 w-4 mr-1" />
@@ -453,6 +543,8 @@ export default function ExamTakingPage() {
                       ? "填空题"
                       : currentQuestion.type === "truefalse"
                       ? "判断题"
+                      : currentQuestion.type === "cloze"
+                      ? "完形填空"
                       : "题"}
                   </Badge>
                   <span className="text-sm font-medium text-muted-foreground">
@@ -460,10 +552,12 @@ export default function ExamTakingPage() {
                   </span>
                 </div>
 
-                {/* Question content */}
-                <div className="text-base font-medium leading-relaxed">
-                  {currentQuestion.content}
-                </div>
+                {/* Question content（cloze 题干含空格标记，改在下方与选择控件一起渲染） */}
+                {currentQuestion.type !== "cloze" && (
+                  <div className="text-base font-medium leading-relaxed">
+                    {currentQuestion.content}
+                  </div>
+                )}
 
                 {currentQuestion.image && (
                   <img
@@ -578,6 +672,81 @@ export default function ExamTakingPage() {
                   </div>
                 )}
 
+                {currentQuestion.type === "cloze" && (
+                  <div className="text-base leading-relaxed">
+                    {(() => {
+                      const blanks = (Array.isArray(currentQuestion.options)
+                        ? currentQuestion.options
+                        : []
+                      )
+                        .slice()
+                        .sort((a, b) => parseInt(a.key, 10) - parseInt(b.key, 10));
+                      const blankKeys = blanks.map((b) => b.key);
+                      const parts = currentQuestion.content.split(/_{2,}\(?(\d+)\)?_{2,}/g);
+                      const selectedParts = currentAnswer.split(",");
+                      return parts.map((part, i) => {
+                        if (i % 2 === 0) return <span key={i}>{part}</span>;
+                        const blankNum = part;
+                        const blankIndex = blankKeys.indexOf(blankNum);
+                        if (blankIndex === -1) return <span key={i}>_____</span>;
+                        const blank = blanks[blankIndex];
+                        const choices = blank.value.split("|").map((c) => {
+                          const m = c.trim().match(/^([A-Z])\.\s*(.*)/);
+                          return { key: m?.[1] || "", text: m?.[2] || c.trim() };
+                        }).filter((c) => c.key);
+                        const selectedKey = (selectedParts[blankIndex] || "").trim();
+                        return (
+                          <span key={i} className="mx-1 inline-block">
+                            <select
+                              value={selectedKey}
+                              onChange={(e) => {
+                                // 答案序列化与练习页/判分 API 一致：按空序逐位拼接为 "A,B,C"
+                                const nextParts = blankKeys.map((k, idx) =>
+                                  k === blankNum ? e.target.value : (selectedParts[idx] || "").trim()
+                                );
+                                if (nextParts.every((p) => !p.trim())) {
+                                  // 全部清空时移除已保存的作答
+                                  const rest = { ...answers };
+                                  delete rest[currentQuestion.id];
+                                  useExamStore.setState({ answers: rest });
+                                  return;
+                                }
+                                // 本地预判与服务端 gradeAnswer 的 cloze 规则一致：按空序逐位比对
+                                const correctParts = (currentQuestion.answer || "")
+                                  .split(",")
+                                  .map((s) => s.trim().toLowerCase())
+                                  .filter(Boolean);
+                                const isCorrect =
+                                  correctParts.length > 0 &&
+                                  correctParts.every(
+                                    (p, idx) => (nextParts[idx] || "").trim().toLowerCase() === p
+                                  );
+                                handleSubmitAnswer(
+                                  currentEq.id,
+                                  currentQuestion.id,
+                                  nextParts.join(","),
+                                  isCorrect
+                                );
+                              }}
+                              className={cn(
+                                "rounded border border-border bg-background px-2 py-1 text-sm",
+                                !selectedKey && "text-muted-foreground"
+                              )}
+                            >
+                              <option value="">空 {blankNum}</option>
+                              {choices.map((c) => (
+                                <option key={c.key} value={c.key}>
+                                  {c.key}. {c.text}
+                                </option>
+                              ))}
+                            </select>
+                          </span>
+                        );
+                      });
+                    })()}
+                  </div>
+                )}
+
                 {/* Navigation */}
                 <div className="flex items-center justify-between pt-4 border-t">
                   <Button
@@ -614,70 +783,83 @@ export default function ExamTakingPage() {
             </Card>
           </div>
 
-          {/* Question list sidebar */}
+          {/* Narrow-screen drawer overlay */}
           {sidebarOpen && (
-            <div className="w-64 shrink-0 border rounded-lg bg-card overflow-y-auto p-4 space-y-2">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium">题目列表</span>
-                <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(false)}>
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-              <Button
-                className="w-full"
-                size="sm"
-                onClick={() => setShowConfirmSubmit(true)}
-              >
-                <Send className="mr-2 h-3.5 w-3.5" />
-                交卷
+            <div
+              className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+              onClick={() => setSidebarOpen(false)}
+            />
+          )}
+
+          {/* Question list sidebar（窄屏为右侧抽屉，lg 及以上常驻） */}
+          <div
+            className={cn(
+              "fixed inset-y-0 right-0 z-50 w-64 shrink-0 space-y-2 overflow-y-auto border-l bg-card p-4 transition-transform lg:static lg:translate-x-0 lg:rounded-lg lg:border",
+              sidebarOpen ? "translate-x-0" : "translate-x-full lg:translate-x-0"
+            )}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium">题目列表</span>
+              <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setSidebarOpen(false)}>
+                <X className="h-4 w-4" />
               </Button>
-              <Separator />
-              {exam.questions.map((eq, idx) => {
-                const isAnswered = !!answers[eq.questionId];
-                const isCurrent = idx === currentIndex;
-                return (
-                  <button
-                    key={eq.id}
-                    onClick={() => {
-                      setCurrentIndex(idx);
-                      setSidebarOpen(false);
-                    }}
+            </div>
+            <Button
+              className="w-full"
+              size="sm"
+              onClick={() => setShowConfirmSubmit(true)}
+            >
+              <Send className="mr-2 h-3.5 w-3.5" />
+              交卷
+            </Button>
+            <Separator />
+            {exam.questions.map((eq, idx) => {
+              const isAnswered = !!answers[eq.questionId];
+              const isCurrent = idx === currentIndex;
+              return (
+                <button
+                  key={eq.id}
+                  onClick={() => {
+                    setCurrentIndex(idx);
+                    setSidebarOpen(false);
+                  }}
+                  className={cn(
+                    "flex items-center gap-2 w-full p-2 rounded-md text-sm transition-colors",
+                    isCurrent
+                      ? "bg-primary/10 text-primary font-medium"
+                      : isAnswered
+                      ? "bg-green-50 hover:bg-green-100"
+                      : "hover:bg-accent text-muted-foreground"
+                  )}
+                >
+                  <span
                     className={cn(
-                      "flex items-center gap-2 w-full p-2 rounded-md text-sm transition-colors",
+                      "w-6 h-6 rounded-full flex items-center justify-center text-xs border",
                       isCurrent
-                        ? "bg-primary/10 text-primary font-medium"
+                        ? "border-primary bg-primary text-primary-foreground"
                         : isAnswered
-                        ? "bg-green-50 hover:bg-green-100"
-                        : "hover:bg-accent text-muted-foreground"
+                        ? "border-green-300 bg-green-100 text-green-700"
+                        : "border-muted-foreground/30"
                     )}
                   >
-                    <span
-                      className={cn(
-                        "w-6 h-6 rounded-full flex items-center justify-center text-xs border",
-                        isCurrent
-                          ? "border-primary bg-primary text-primary-foreground"
-                          : isAnswered
-                          ? "border-green-300 bg-green-100 text-green-700"
-                          : "border-muted-foreground/30"
-                      )}
-                    >
-                      {idx + 1}
-                    </span>
-                    <span className="truncate flex-1">
-                      {eq.question.type === "single"
-                        ? "单选"
-                        : eq.question.type === "multiple"
-                        ? "多选"
-                        : eq.question.type === "fillblank"
-                        ? "填空"
-                        : "题目"}
-                    </span>
-                    {isAnswered && <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" />}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+                    {idx + 1}
+                  </span>
+                  <span className="truncate flex-1">
+                    {eq.question.type === "single"
+                      ? "单选"
+                      : eq.question.type === "multiple"
+                      ? "多选"
+                      : eq.question.type === "fillblank"
+                      ? "填空"
+                      : eq.question.type === "cloze"
+                      ? "完形"
+                      : "题目"}
+                  </span>
+                  {isAnswered && <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" />}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* Submit confirmation */}
@@ -712,12 +894,81 @@ export default function ExamTakingPage() {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        {/* Exit confirmation */}
+        <AlertDialog open={showExitConfirm} onOpenChange={setShowExitConfirm}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>退出考试？</AlertDialogTitle>
+              <AlertDialogDescription>
+                考试仍在进行，倒计时不暂停，稍后可从列表返回继续。是否退出？
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <Button
+                variant="ghost"
+                className="mr-auto text-red-600 hover:text-red-700 hover:bg-red-50"
+                onClick={() => {
+                  setShowExitConfirm(false);
+                  setShowAbandonConfirm(true);
+                }}
+              >
+                放弃本次考试
+              </Button>
+              <AlertDialogCancel onClick={() => router.push("/exams")}>
+                退出并稍后继续
+              </AlertDialogCancel>
+              <AlertDialogAction>继续考试</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        {/* Abandon confirmation */}
+        <AlertDialog open={showAbandonConfirm} onOpenChange={setShowAbandonConfirm}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>确认放弃本次考试？</AlertDialogTitle>
+              <AlertDialogDescription>
+                放弃后本场考试将作废，无法继续作答，且该操作不可撤销。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={abandoning}>取消</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={handleAbandonExam}
+                disabled={abandoning}
+                className="bg-red-600 hover:bg-red-700"
+              >
+                {abandoning ? "放弃中..." : "确认放弃"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     );
   }
 
-  // COMPLETED / ABANDONED status - show results
-  if (exam.status === "COMPLETED" || exam.status === "ABANDONED") {
+  // ABANDONED status - exam invalidated, no entry
+  if (exam.status === "ABANDONED") {
+    return (
+      <div className="max-w-2xl mx-auto space-y-6">
+        <Button variant="ghost" onClick={() => router.push("/exams")}>
+          <ChevronLeft className="mr-2 h-4 w-4" />
+          返回列表
+        </Button>
+        <Card>
+          <CardContent className="p-8 text-center space-y-3">
+            <AlertTriangle className="mx-auto h-10 w-10 text-muted-foreground" />
+            <h2 className="text-lg font-bold">本场考试已放弃</h2>
+            <p className="text-sm text-muted-foreground">{exam.title}</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // COMPLETED status - show results
+  if (exam.status === "COMPLETED") {
     const answeredCount = getAnsweredCount();
     return (
       <div className="max-w-3xl mx-auto space-y-6">
@@ -752,6 +1003,25 @@ export default function ExamTakingPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Retake */}
+        {canRetake && (
+          <div className="flex justify-center">
+            <Button onClick={handleRetake} disabled={retaking}>
+              {retaking ? (
+                <>
+                  <Timer className="mr-2 h-4 w-4 animate-pulse" />
+                  正在创建新考试...
+                </>
+              ) : (
+                <>
+                  <Play className="mr-2 h-4 w-4" />
+                  再考一次
+                </>
+              )}
+            </Button>
+          </div>
+        )}
 
         {/* Ranking */}
         {rankingsLoading ? (
@@ -850,6 +1120,8 @@ export default function ExamTakingPage() {
                         ? "填空"
                         : question.type === "truefalse"
                         ? "判断"
+                        : question.type === "cloze"
+                        ? "完形"
                         : "题"}
                     </Badge>
                   </div>
@@ -892,14 +1164,16 @@ export default function ExamTakingPage() {
                     </div>
                   )}
 
-                  {eq.userAnswer && question.type === "fillblank" && (
-                    <p className="text-sm">
-                      你的答案:{" "}
-                      <span className={isCorrect ? "text-green-600" : "text-red-600"}>
-                        {eq.userAnswer}
-                      </span>
-                    </p>
-                  )}
+                  {eq.userAnswer &&
+                    (question.type === "fillblank" || question.type === "cloze") && (
+                      <p className="text-sm">
+                        你的答案
+                        {question.type === "cloze" && "（按空序）"}:{" "}
+                        <span className={isCorrect ? "text-green-600" : "text-red-600"}>
+                          {eq.userAnswer}
+                        </span>
+                      </p>
+                    )}
 
                   {exam.status === "COMPLETED" && (
                     <div className="mt-2 space-y-1 text-sm">
@@ -926,5 +1200,3 @@ export default function ExamTakingPage() {
 
   return null;
 }
-
-// Need to import Play at top - add it via edit

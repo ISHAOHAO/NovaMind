@@ -3,12 +3,12 @@
 import { useEffect, useState, useCallback } from "react";
 import {
   Search,
-  ChevronLeft,
-  ChevronRight,
   FileText,
   RotateCw,
   Copy,
   Check,
+  Download,
+  Loader2,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { formatDate } from "@/lib/utils";
+import { useDebouncedValue } from "@/lib/use-debounce";
+import { SharedPagination } from "@/components/shared/pagination";
 
 interface AuditLog {
   id: string;
@@ -78,6 +80,20 @@ const actionLabels: Record<string, string> = {
   ACTIVATE: "激活",
   CREATE_BANK: "创建题库",
   DELETE_BANK: "删除题库",
+  RESOLVE_REPORT: "处理反馈",
+  DISMISS_REPORT: "驳回反馈",
+  EXAM_ABANDON: "放弃考试",
+  CHANGE_PASSWORD: "修改密码",
+  VERIFY_EMAIL: "邮箱验证",
+  ACTIVATE_ACCOUNT: "激活账号",
+  MANAGE_BANK: "管理题库",
+  QUESTION_REVIEW: "题库审核",
+  QUESTION_BANK_CREATE: "创建题库",
+  QUESTION_BANK_UPDATE: "更新题库",
+  QUESTION_BANK_DELETE: "删除题库",
+  QUESTIONS_ADD: "添加题目",
+  QUESTION_UPDATE: "更新题目",
+  QUESTION_DELETE: "删除题目",
 };
 
 const actionVariants: Record<string, "default" | "secondary" | "success" | "warning" | "destructive" | "outline"> = {
@@ -97,6 +113,20 @@ const actionVariants: Record<string, "default" | "secondary" | "success" | "warn
   ACTIVATE: "success",
   CREATE_BANK: "outline",
   DELETE_BANK: "destructive",
+  RESOLVE_REPORT: "success",
+  DISMISS_REPORT: "destructive",
+  EXAM_ABANDON: "warning",
+  CHANGE_PASSWORD: "secondary",
+  VERIFY_EMAIL: "outline",
+  ACTIVATE_ACCOUNT: "success",
+  MANAGE_BANK: "outline",
+  QUESTION_REVIEW: "secondary",
+  QUESTION_BANK_CREATE: "outline",
+  QUESTION_BANK_UPDATE: "outline",
+  QUESTION_BANK_DELETE: "destructive",
+  QUESTIONS_ADD: "outline",
+  QUESTION_UPDATE: "outline",
+  QUESTION_DELETE: "destructive",
 };
 
 export default function LogsPage() {
@@ -110,12 +140,14 @@ export default function LogsPage() {
   });
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [actionFilter, setActionFilter] = useState("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [copiedIp, setCopiedIp] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const fetchLogs = useCallback(async (page: number) => {
     setLoading(true);
@@ -123,7 +155,7 @@ export default function LogsPage() {
       const params = new URLSearchParams();
       params.set("page", String(page));
       params.set("limit", "50");
-      if (search) params.set("search", search);
+      if (debouncedSearch) params.set("search", debouncedSearch);
       if (actionFilter !== "all") params.set("action", actionFilter);
       if (dateFrom) params.set("from", dateFrom);
       if (dateTo) params.set("to", dateTo);
@@ -141,7 +173,37 @@ export default function LogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, actionFilter, dateFrom, dateTo]);
+  }, [debouncedSearch, actionFilter, dateFrom, dateTo]);
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (debouncedSearch) params.set("search", debouncedSearch);
+      if (actionFilter !== "all") params.set("action", actionFilter);
+      if (dateFrom) params.set("from", dateFrom);
+      if (dateTo) params.set("to", dateTo);
+
+      const token = localStorage.getItem("novamind_token");
+      const res = await fetch(`/api/admin/logs/export?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        throw new Error("导出失败");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `operation-logs-${Date.now()}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("导出失败");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   useEffect(() => {
     fetchLogs(1);
@@ -192,14 +254,24 @@ export default function LogsPage() {
               <FileText className="h-5 w-5" />
               操作日志
             </div>
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={() => fetchLogs(pagination.page)}
-              disabled={loading}
-            >
-              <RotateCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting}>
+                {exporting ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="mr-1 h-4 w-4" />
+                )}
+                导出 CSV
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => fetchLogs(pagination.page)}
+                disabled={loading}
+              >
+                <RotateCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -364,33 +436,13 @@ export default function LogsPage() {
                 </TableBody>
               </Table>
 
-              {pagination.totalPages > 1 && (
-                <div className="mt-4 flex items-center justify-between">
-                  <p className="text-sm text-muted-foreground">
-                    共 {pagination.total} 条，第 {pagination.page} / {pagination.totalPages} 页
-                  </p>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={pagination.page <= 1}
-                      onClick={() => fetchLogs(pagination.page - 1)}
-                    >
-                      <ChevronLeft className="mr-1 h-4 w-4" />
-                      上一页
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={pagination.page >= pagination.totalPages}
-                      onClick={() => fetchLogs(pagination.page + 1)}
-                    >
-                      下一页
-                      <ChevronRight className="ml-1 h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              )}
+              <SharedPagination
+                page={pagination.page}
+                totalPages={pagination.totalPages}
+                total={pagination.total}
+                pageSize={pagination.limit}
+                onPageChange={(p) => fetchLogs(p)}
+              />
             </>
           )}
         </CardContent>

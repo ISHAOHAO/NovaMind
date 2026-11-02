@@ -52,8 +52,6 @@ export async function GET(
       return Response.json({ error: "无权访问该考试" }, { status: 403 });
     }
 
-    const isDraft = exam.status === "DRAFT";
-
     const result = {
       id: exam.id,
       title: exam.title,
@@ -82,8 +80,9 @@ export async function GET(
           type: eq.question.type,
           content: eq.question.content,
           options: eq.question.options,
-          answer: isDraft ? eq.question.answer : undefined,
-          analysis: isDraft ? eq.question.analysis : undefined,
+          // 答案/解析仅在考试完成（已判分）后回传；草稿与进行中一律剥离，防止开考前背题
+          answer: exam.status === "COMPLETED" ? eq.question.answer : undefined,
+          analysis: exam.status === "COMPLETED" ? eq.question.analysis : undefined,
           image: eq.question.image,
         },
       })),
@@ -267,6 +266,34 @@ export async function PUT(
       };
 
       return Response.json(result);
+    }
+
+    if (action === "abandon") {
+      // 仅允许本人将进行中的考试置为已放弃（本人校验已在上方完成）
+      if (exam.status !== "IN_PROGRESS") {
+        return Response.json({ error: "只有进行中的考试才能放弃" }, { status: 400 });
+      }
+
+      const updated = await prisma.exam.update({
+        where: { id: examId },
+        data: { status: "ABANDONED" },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: user.userId,
+          action: "EXAM_ABANDON",
+          details: JSON.stringify({ examId, title: exam.title }),
+          ip: req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip") || null,
+          userAgent: req.headers.get("user-agent") || null,
+        },
+      });
+
+      return Response.json({
+        id: updated.id,
+        status: updated.status,
+        message: "考试已放弃",
+      });
     }
 
     return Response.json({ error: "无效的操作" }, { status: 400 });

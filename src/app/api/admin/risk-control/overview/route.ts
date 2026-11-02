@@ -27,6 +27,7 @@ export const GET = requireAdmin(async (_req: NextRequest) => {
       topFailedIps,
       topFailedEmails,
       hourlyAttempts,
+      dailyTrend,
     ] = await Promise.all([
       prisma.loginAttempt.count({
         where: { createdAt: { gte: hours24Ago } },
@@ -78,6 +79,17 @@ export const GET = requireAdmin(async (_req: NextRequest) => {
         LIMIT 48`,
         hours24Ago
       ),
+      prisma.$queryRawUnsafe<Array<{ date: string; count: number; failed: number }>>(
+        `SELECT
+          to_char("createdAt", 'YYYY-MM-DD') as date,
+          COUNT(*)::int as count,
+          SUM(CASE WHEN success = false THEN 1 ELSE 0 END)::int as failed
+        FROM "LoginAttempt"
+        WHERE "createdAt" >= $1
+        GROUP BY date
+        ORDER BY date ASC`,
+        weekAgo
+      ),
     ]);
 
     const failedRate24h = totalAttempts24h > 0
@@ -97,6 +109,7 @@ export const GET = requireAdmin(async (_req: NextRequest) => {
       topFailedIps: topFailedIps.map((r) => ({ ip: r.ip, count: r._count.ip })),
       topFailedEmails: topFailedEmails.map((r) => ({ email: r.email, count: r._count.email })),
       hourlyAttempts,
+      dailyTrend,
     };
 
     await setToCache("admin:risk-control:overview", overview, 30);

@@ -3,6 +3,7 @@ import { requireAdmin, TokenPayload } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 import { UserRole } from "@prisma/client";
+import { invalidatePattern } from "@/lib/redis";
 
 const VALID_ROLES: UserRole[] = ["USER", "ADMIN", "SUPER_ADMIN"];
 
@@ -181,6 +182,9 @@ export const PUT = requireAdmin(async (req: NextRequest, { params }: { params: P
       },
     });
 
+    // 使用户列表缓存失效，避免操作成功后列表短时间显示旧数据
+    await invalidatePattern("admin:users:list:*");
+
     return Response.json({ user, message: "用户信息已更新" });
   } catch (error) {
     if (error instanceof SyntaxError) {
@@ -236,6 +240,9 @@ export const DELETE = requireAdmin(async (req: NextRequest, { params }: { params
         userAgent: req.headers.get("user-agent") || null,
       },
     });
+
+    // 使用户列表缓存失效，避免删除成功后列表短时间仍显示该用户
+    await invalidatePattern("admin:users:list:*");
 
     return Response.json({ message: "用户已删除" });
   } catch (error) {

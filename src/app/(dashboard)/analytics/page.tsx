@@ -50,6 +50,7 @@ interface Overview {
   todayQuestions: number;
   totalBanks: number;
   activeDays: number;
+  streakDays: number;
   avgDuration: number;
 }
 
@@ -321,9 +322,9 @@ export default function AnalyticsPage() {
       bg: "bg-purple-100",
     },
     {
-      title: "活跃天数",
-      value: overview?.activeDays ?? 0,
-      subtitle: `平均每题 ${overview?.avgDuration ?? 0}秒`,
+      title: "连续学习",
+      value: `${overview?.streakDays ?? 0} 天`,
+      subtitle: `累计活跃 ${overview?.activeDays ?? 0} 天 · 平均每题 ${overview?.avgDuration ?? 0}秒`,
       icon: Flame,
       color: "text-orange-600",
       bg: "bg-orange-100",

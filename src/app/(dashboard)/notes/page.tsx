@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
+import DOMPurify from "dompurify";
 import {
   Search,
   Star,
@@ -12,6 +14,7 @@ import {
   Pencil,
   Check,
   X,
+  BookOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,6 +41,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn, formatDate } from "@/lib/utils";
+import { useDebouncedValue } from "@/lib/use-debounce";
 
 interface Note {
   id: string;
@@ -73,6 +77,7 @@ export default function NotesPage() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [importanceFilter, setImportanceFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -93,7 +98,7 @@ export default function NotesPage() {
       const params = new URLSearchParams();
       params.set("page", String(page));
       params.set("limit", "20");
-      if (search) params.set("search", search);
+      if (debouncedSearch) params.set("search", debouncedSearch);
       if (importanceFilter !== "all") params.set("importance", importanceFilter);
 
       if (tab === "high") {
@@ -114,7 +119,7 @@ export default function NotesPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, importanceFilter, tab]);
+  }, [page, debouncedSearch, importanceFilter, tab]);
 
   useEffect(() => {
     fetchNotes();
@@ -122,19 +127,29 @@ export default function NotesPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [search, importanceFilter, tab]);
+  }, [debouncedSearch, importanceFilter, tab]);
 
   const fetchStats = useCallback(async () => {
     try {
       const token = localStorage.getItem("novamind_token");
-      const res = await fetch("/api/questions/notes?limit=1", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
+      const headers = { Authorization: `Bearer ${token}` };
+      // 分别取各口径的 total（limit=1 只为拿 total 字段，开销极小）
+      const [allRes, high4Res, high5Res, aiRes] = await Promise.all([
+        fetch("/api/questions/notes?limit=1", { headers }),
+        fetch("/api/questions/notes?limit=1&importance=4", { headers }),
+        fetch("/api/questions/notes?limit=1&importance=5", { headers }),
+        fetch("/api/questions/notes?limit=1&isAiGenerated=true", { headers }),
+      ]);
+      const [all, high4, high5, ai] = await Promise.all([
+        allRes.json(),
+        high4Res.json(),
+        high5Res.json(),
+        aiRes.json(),
+      ]);
       return {
-        total: data.total || 0,
-        highCount: data.data?.filter((n: Note) => n.importance >= 4).length || 0,
-        aiCount: data.data?.filter((n: Note) => n.isAiGenerated).length || 0,
+        total: all.total || 0,
+        highCount: (high4.total || 0) + (high5.total || 0),
+        aiCount: ai.total || 0,
       };
     } catch {
       return { total: 0, highCount: 0, aiCount: 0 };
@@ -288,13 +303,13 @@ export default function NotesPage() {
         <p className="text-sm text-muted-foreground">管理和回顾你的学习笔记</p>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm text-muted-foreground">总笔记数</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold">{total}</p>
+            <p className="text-2xl font-bold">{stats.total}</p>
           </CardContent>
         </Card>
         <Card>
@@ -302,9 +317,7 @@ export default function NotesPage() {
             <CardTitle className="text-sm text-muted-foreground">高重要笔记</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold text-yellow-600">
-              {notes.filter((n) => n.importance >= 4).length}
-            </p>
+            <p className="text-2xl font-bold text-yellow-600">{stats.highCount}</p>
           </CardContent>
         </Card>
         <Card>
@@ -312,9 +325,7 @@ export default function NotesPage() {
             <CardTitle className="text-sm text-muted-foreground">AI 生成笔记</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold text-purple-600">
-              {notes.filter((n) => n.isAiGenerated).length}
-            </p>
+            <p className="text-2xl font-bold text-purple-600">{stats.aiCount}</p>
           </CardContent>
         </Card>
       </div>
@@ -493,8 +504,23 @@ export default function NotesPage() {
                               ))}
                             </div>
                             <span className="text-xs text-muted-foreground">
-                              {note.updatedAt}
+                              {formatDate(note.updatedAt)}
                             </span>
+                            {note.question.bank && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs text-muted-foreground"
+                                asChild
+                              >
+                                <Link
+                                  href={`/questions/${note.question.bank.id}?questionId=${note.questionId}`}
+                                >
+                                  <BookOpen className="mr-1 h-3 w-3" />
+                                  查看题目
+                                </Link>
+                              </Button>
+                            )}
                             {editingNoteId !== note.id && (
                               <Button
                                 variant="ghost"
@@ -564,7 +590,9 @@ export default function NotesPage() {
             ) : (
               <div
                 className="prose prose-sm max-w-none dark:prose-invert"
-                dangerouslySetInnerHTML={{ __html: summary }}
+                dangerouslySetInnerHTML={{
+                  __html: DOMPurify.sanitize(summary),
+                }}
               />
             )}
           </ScrollArea>

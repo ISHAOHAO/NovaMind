@@ -74,6 +74,23 @@ async function saveToCache(
   }
 }
 
+/** AI 请求超时（毫秒）：慢响应不再让前端无限等待 */
+const AI_TIMEOUT_MS = 60_000;
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs = AI_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function askAi(
   prompt: string,
   systemPrompt?: string,
@@ -94,8 +111,84 @@ export async function askAi(
     }
   }
 
-  try {
-    const response = await fetch(`${config.baseUrl}/chat/completions`, {
+  let lastError: unknown = null;
+  // 最多尝试 2 次（一次网络抖动自动重试）
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await fetchWithTimeout(
+        `${config.baseUrl}/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: config.model,
+            messages: [
+              ...(systemPrompt
+                ? [{ role: "system", content: systemPrompt }]
+                : []),
+              { role: "user", content: prompt },
+            ],
+            max_tokens: 2000,
+            temperature: 0.7,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`AI API error: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      const content = cleanAiContent(data.choices?.[0]?.message?.content || "");
+
+      await saveToCache(promptHash, prompt, content, config.model);
+
+      return { success: true, content, cached: false };
+    } catch (error) {
+      lastError = error;
+      console.error(`AI request failed (attempt ${attempt + 1}/2):`, error);
+    }
+  }
+
+  return {
+    success: false,
+    content: "",
+    error: lastError instanceof Error ? lastError.message : "AI 请求失败",
+  };
+}
+
+/**
+ * 流式问答：逐段产出 AI 文本增量。
+ * 命中缓存时一次性产出完整内容；否则以 stream 模式调用上游并透传增量，
+ * 结束后整体写入缓存。失败时抛出异常，由调用方负责退款/提示。
+ */
+export async function* streamAiContent(
+  prompt: string,
+  systemPrompt?: string,
+  skipCache: boolean = false
+): AsyncGenerator<string, void, undefined> {
+  const config = await getAiConfig();
+
+  if (!config.enabled || !config.apiKey) {
+    throw new Error("AI 功能未启用或未配置 API Key");
+  }
+
+  const promptHash = hashPrompt(prompt, systemPrompt || "", config.model);
+
+  if (!skipCache) {
+    const cached = await getCachedResponse(promptHash);
+    if (cached) {
+      yield cached;
+      return;
+    }
+  }
+
+  const response = await fetchWithTimeout(
+    `${config.baseUrl}/chat/completions`,
+    {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -104,36 +197,61 @@ export async function askAi(
       body: JSON.stringify({
         model: config.model,
         messages: [
-          ...(systemPrompt
-            ? [{ role: "system", content: systemPrompt }]
-            : []),
+          ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
           { role: "user", content: prompt },
         ],
         max_tokens: 2000,
         temperature: 0.7,
+        stream: true,
       }),
-    });
+    },
+    AI_TIMEOUT_MS * 2 // 流式首包 + 长回答，放宽超时
+  );
 
-    if (!response.ok) {
-      throw new Error(`AI API error: ${response.statusText}`);
+  if (!response.ok || !response.body) {
+    throw new Error(`AI API error: ${response.statusText}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let full = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (payload === "[DONE]") continue;
+      try {
+        const json = JSON.parse(payload);
+        const delta: string = json.choices?.[0]?.delta?.content || "";
+        if (delta) {
+          full += delta;
+          yield delta;
+        }
+      } catch {
+        // 忽略无法解析的心跳/杂项行
+      }
     }
+  }
 
-    const data = await response.json();
-    const content = cleanAiContent(data.choices?.[0]?.message?.content || "");
-
+  const content = cleanAiContent(full);
+  if (content) {
     await saveToCache(promptHash, prompt, content, config.model);
-
-    return { success: true, content, cached: false };
-  } catch (error) {
-    console.error("AI request failed:", error);
-    return {
-      success: false,
-      content: "",
-      error: error instanceof Error ? error.message : "AI 请求失败",
-    };
   }
 }
 
+/**
+ * 提示词统一要求 AI 输出语义化 HTML（类名见 globals.css 的 .ai-content），
+ * 样式由前端控制以适配深浅色主题，禁止内联颜色。
+ */
 function buildAnalyzePrompt(questionContent: string, answer: string, analysis?: string): string {
   return `
 你是一位专业的考试辅导老师。请对以下题目进行详细解析：
@@ -143,7 +261,7 @@ function buildAnalyzePrompt(questionContent: string, answer: string, analysis?: 
 ${analysis ? `已有解析：${analysis}` : ""}
 
 请使用 HTML 格式输出，结构如下：
-<div class="analysis">
+<div class="ai-block">
   <h3>📌 考点分析</h3>
   <p>...考点内容...</p>
   <h3>💡 解题思路</h3>
@@ -159,8 +277,8 @@ ${analysis ? `已有解析：${analysis}` : ""}
 
 要求：
 - 必须使用 HTML 格式，不要输出 JSON 或纯文本
-- 使用内联 style 属性设置颜色和样式，使内容美观易读
-- 重点内容用不同颜色标注（正确用绿色 #16a34a，错误用红色 #dc2626）
+- 只使用上述结构中出现的 class（ai-block/ai-box/ai-good/ai-bad/ai-highlight），不要使用任何内联 style 或颜色
+- 正确结论用 <span class="ai-good">，错误结论用 <span class="ai-bad">，重点用 <span class="ai-highlight">
 - 不要使用 Markdown 代码块标记
 `;
 }
@@ -176,13 +294,14 @@ function buildExplainPrompt(questionContent: string, answer: string): string {
 1. 用简单清晰的语言解释
 2. 适合初学者理解
 3. 使用 HTML 格式输出，结构如下：
-<div style="padding:12px; border-radius:8px; background:#f0f9ff;">
-  <h3 style="color:#2563eb;">📖 答案讲解</h3>
+<div class="ai-block">
+  <h3>📖 答案讲解</h3>
   <p>...通俗易懂的讲解内容...</p>
-  ${answer ? `<p style="margin-top:8px;"><strong style="color:#16a34a;">正确答案：${answer}</strong></p>` : ""}
+  ${answer ? `<p><strong>正确答案：</strong><span class="ai-good">${answer}</span></p>` : ""}
 </div>
-4. 必须使用 HTML 格式，不要输出 JSON 或纯文本
-5. 不要使用 Markdown 代码块标记
+4. 只使用 ai-block/ai-box/ai-good/ai-bad/ai-highlight 这些 class，不要使用任何内联 style 或颜色
+5. 必须使用 HTML 格式，不要输出 JSON 或纯文本
+6. 不要使用 Markdown 代码块标记
 `;
 }
 
@@ -198,23 +317,50 @@ function buildSimilarQuestionPrompt(questionContent: string, answer: string): st
 2. 改变题目数据或表述方式
 3. 使用 HTML 格式直接输出，结构如下（不要输出 JSON 或 Markdown 代码块）：
 
-<div style="padding:12px; border-radius:8px; background:#fef3c7; border:1px solid #fcd34d;">
-  <h3 style="color:#d97706;">🔀 相似题</h3>
-  <div style="background:#fff;padding:12px;border-radius:6px;margin:8px 0;">
-    <p style="font-weight:bold;">题目：</p>
+<div class="ai-block">
+  <h3>🔀 相似题</h3>
+  <div class="ai-box">
+    <p><strong>题目：</strong></p>
     <p>...生成的题目内容...</p>
-    <p style="margin-top:8px;">A. ...选项A...</p>
+    <p>A. ...选项A...</p>
     <p>B. ...选项B...</p>
     <p>C. ...选项C...</p>
     <p>D. ...选项D...</p>
   </div>
-  <p style="margin-top:8px;"><strong style="color:#16a34a;">正确答案：</strong>...答案...</p>
-  <p style="margin-top:4px;"><strong>解析：</strong>...解析内容...</p>
+  <p><strong>正确答案：</strong><span class="ai-good">...答案...</span></p>
+  <p><strong>解析：</strong>...解析内容...</p>
 </div>
 
 4. 绝对不要输出 JSON 格式，不要使用 \`\`\` 代码块标记
-5. 只输出上述 HTML 结构
+5. 只使用 ai-block/ai-box/ai-good/ai-bad/ai-highlight 这些 class，不要使用任何内联 style 或颜色
+6. 只输出上述 HTML 结构
 `;
+}
+
+export function buildQuestionPrompt(
+  action: "analyze" | "explain" | "similar",
+  questionContent: string,
+  answer: string,
+  analysis?: string
+): { prompt: string; systemPrompt: string } {
+  switch (action) {
+    case "analyze":
+      return {
+        prompt: buildAnalyzePrompt(questionContent, answer, analysis),
+        systemPrompt: "你是一位专业的考试辅导老师，请以中文回答。",
+      };
+    case "explain":
+      return {
+        prompt: buildExplainPrompt(questionContent, answer),
+        systemPrompt: "你是一位耐心的老师，请以中文回答。",
+      };
+    case "similar":
+      return {
+        prompt: buildSimilarQuestionPrompt(questionContent, answer),
+        systemPrompt:
+          "你是出题专家。请严格按照要求的 HTML 格式返回，不要使用 JSON 或 Markdown 代码块。",
+      };
+  }
 }
 
 export async function analyzeQuestion(

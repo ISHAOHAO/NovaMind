@@ -7,8 +7,6 @@ import {
   CheckCircle,
   XCircle,
   Eye,
-  ChevronLeft,
-  ChevronRight,
   FileQuestion,
   Trash2,
   EyeOff,
@@ -18,6 +16,7 @@ import {
   Loader2,
   RotateCcw,
   Sparkles,
+  ClipboardPaste,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -61,6 +60,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { formatDate, getDifficultyLabel, getDifficultyColor } from "@/lib/utils";
+import { useDebouncedValue } from "@/lib/use-debounce";
+import { SharedPagination } from "@/components/shared/pagination";
 
 interface QuestionBank {
   id: string;
@@ -108,6 +109,15 @@ interface ReviewTemplate {
   isDefault: boolean;
 }
 
+interface AiReviewItem {
+  index: number;
+  hasIssue: boolean;
+  severity?: string;
+  message?: string;
+  issue?: string;
+  suggestion?: string;
+}
+
 interface Pagination {
   page: number;
   limit: number;
@@ -153,6 +163,7 @@ export default function QuestionsPage() {
   });
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [statusFilter, setStatusFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
 
@@ -168,9 +179,10 @@ export default function QuestionsPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [managingId, setManagingId] = useState<string | null>(null);
   const [reReviewing, setReReviewing] = useState(false);
+  const [togglePublicBank, setTogglePublicBank] = useState<QuestionBank | null>(null);
 
   const [aiReviewing, setAiReviewing] = useState(false);
-  const [aiReviewResult, setAiReviewResult] = useState<any[] | null>(null);
+  const [aiReviewResult, setAiReviewResult] = useState<AiReviewItem[] | null>(null);
   const [aiReviewError, setAiReviewError] = useState("");
   const [aiReviewRaw, setAiReviewRaw] = useState("");
 
@@ -180,7 +192,7 @@ export default function QuestionsPage() {
       const params = new URLSearchParams();
       params.set("page", String(page));
       params.set("limit", "20");
-      if (search) params.set("search", search);
+      if (debouncedSearch) params.set("search", debouncedSearch);
       if (statusFilter !== "all") params.set("status", statusFilter);
       if (categoryFilter !== "all") params.set("category", categoryFilter);
 
@@ -196,7 +208,7 @@ export default function QuestionsPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, statusFilter, categoryFilter]);
+  }, [debouncedSearch, statusFilter, categoryFilter]);
 
   useEffect(() => {
     fetchBanks(1);
@@ -259,6 +271,10 @@ export default function QuestionsPage() {
   };
 
   const handleReview = async (bankId: string, status: string) => {
+    if (status === "REJECTED" && !reviewComment.trim()) {
+      toast.error("驳回时请填写原因，方便上传者改进");
+      return;
+    }
     setReviewing(true);
     try {
       const token = localStorage.getItem("novamind_token");
@@ -357,7 +373,7 @@ export default function QuestionsPage() {
           setAiReviewRaw(data.rawContent);
           toast("AI 返回格式异常，已显示回退结果", { icon: "⚠️" });
         } else {
-          const issueCount = data.reviews.filter((r: any) => r.hasIssue).length;
+          const issueCount = data.reviews.filter((r: AiReviewItem) => r.hasIssue).length;
           toast.success(`AI 分析完成：${issueCount > 0 ? `发现 ${issueCount} 个问题` : "未发现问题"}`);
         }
       } else {
@@ -370,6 +386,30 @@ export default function QuestionsPage() {
     } finally {
       setAiReviewing(false);
     }
+  };
+
+  // 将 AI 发现的问题（严重程度 + 问题 + 建议）汇总为多行文本填入审核评语
+  const handleFillAiSuggestions = () => {
+    if (!aiReviewResult) return;
+    const issues = aiReviewResult.filter((r) => r.hasIssue);
+    if (issues.length === 0) {
+      toast.error("AI 未发现问题，无需填入评语");
+      return;
+    }
+    const severityLabels: Record<string, string> = {
+      error: "错误",
+      warning: "警告",
+      info: "提示",
+    };
+    const lines = issues.map((r) => {
+      const label = severityLabels[r.severity || ""] || r.severity || "提示";
+      const issueText = r.issue || r.message || "";
+      const suggestionText = r.suggestion ? `；建议：${r.suggestion}` : "";
+      return `【${label}】第 ${r.index} 题：${issueText}${suggestionText}`;
+    });
+    const text = `AI 审核发现 ${issues.length} 个问题：\n${lines.join("\n")}`;
+    setReviewComment((prev) => (prev.trim() ? `${prev.trim()}\n${text}` : text));
+    toast.success("已将 AI 建议填入评语");
   };
 
   const handleDelete = async () => {
@@ -609,7 +649,7 @@ export default function QuestionsPage() {
                               size="icon"
                               title={bank.isPublic ? "隐藏" : "公开"}
                               disabled={managingId === bank.id}
-                              onClick={() => handleTogglePublic(bank)}
+                              onClick={() => setTogglePublicBank(bank)}
                             >
                               {bank.isPublic ? (
                                 <EyeOff className="h-4 w-4 text-orange-500" />
@@ -637,33 +677,13 @@ export default function QuestionsPage() {
                 </TableBody>
               </Table>
 
-              {pagination.totalPages > 1 && (
-                <div className="mt-4 flex items-center justify-between">
-                  <p className="text-sm text-muted-foreground">
-                    共 {pagination.total} 条，第 {pagination.page} / {pagination.totalPages} 页
-                  </p>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={pagination.page <= 1}
-                      onClick={() => fetchBanks(pagination.page - 1)}
-                    >
-                      <ChevronLeft className="mr-1 h-4 w-4" />
-                      上一页
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={pagination.page >= pagination.totalPages}
-                      onClick={() => fetchBanks(pagination.page + 1)}
-                    >
-                      下一页
-                      <ChevronRight className="ml-1 h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              )}
+              <SharedPagination
+                page={pagination.page}
+                totalPages={pagination.totalPages}
+                total={pagination.total}
+                pageSize={pagination.limit}
+                onPageChange={(p) => fetchBanks(p)}
+              />
             </>
           )}
         </CardContent>
@@ -836,17 +856,30 @@ export default function QuestionsPage() {
                       <div className="max-h-[200px] overflow-auto rounded-md border bg-muted/30 p-3">
                         <div className="mb-2 flex items-center justify-between">
                           <h4 className="text-sm font-medium">AI 分析结果</h4>
-                          <Badge variant={
-                            aiReviewResult.filter((r: any) => r.hasIssue).length === 0
-                              ? "success" : "warning"
-                          }>
-                            {aiReviewResult.filter((r: any) => r.hasIssue).length > 0
-                              ? `${aiReviewResult.filter((r: any) => r.hasIssue).length} 个问题`
-                              : "全部通过"}
-                          </Badge>
+                          <div className="flex items-center gap-2">
+                            {aiReviewResult.some((r) => r.hasIssue) && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={handleFillAiSuggestions}
+                              >
+                                <ClipboardPaste className="mr-1 h-3 w-3" />
+                                将 AI 建议填入评语
+                              </Button>
+                            )}
+                            <Badge variant={
+                              aiReviewResult.filter((r) => r.hasIssue).length === 0
+                                ? "success" : "warning"
+                            }>
+                              {aiReviewResult.filter((r) => r.hasIssue).length > 0
+                                ? `${aiReviewResult.filter((r) => r.hasIssue).length} 个问题`
+                                : "全部通过"}
+                            </Badge>
+                          </div>
                         </div>
                         <div className="space-y-2">
-                          {aiReviewResult.map((review: any, idx: number) => (
+                          {aiReviewResult.map((review, idx: number) => (
                             <div
                               key={idx}
                               className={`rounded border p-2 text-xs ${
@@ -987,6 +1020,35 @@ export default function QuestionsPage() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               确认删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={togglePublicBank !== null}
+        onOpenChange={(open) => { if (!open) setTogglePublicBank(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              确认{togglePublicBank?.isPublic ? "隐藏" : "公开"}题库
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {togglePublicBank?.isPublic
+                ? `确定要隐藏题库「${togglePublicBank?.title}」吗？隐藏后用户端将无法查看该题库。`
+                : `确定要公开题库「${togglePublicBank?.title}」吗？公开后所有用户均可查看该题库。`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (togglePublicBank) handleTogglePublic(togglePublicBank);
+                setTogglePublicBank(null);
+              }}
+            >
+              确认
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -122,5 +122,4 @@ export interface ApiResponse<T = unknown> {
   message?: string;
 }
 
-export type PracticeMode = "sequential" | "random" | "wrong";
 export type QuestionType = "single" | "multiple" | "truefalse" | "fillblank" | "cloze";

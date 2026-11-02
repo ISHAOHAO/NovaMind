@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { useDebouncedValue } from "@/lib/use-debounce";
 import {
   Plus,
   ChevronLeft,
@@ -83,7 +84,7 @@ const statusConfig: Record<string, { label: string; className: string }> = {
   DRAFT: { label: "草稿", className: "bg-gray-100 text-gray-700" },
   IN_PROGRESS: { label: "进行中", className: "bg-blue-100 text-blue-700" },
   COMPLETED: { label: "已完成", className: "bg-green-100 text-green-700" },
-  ABANDONED: { label: "已放弃", className: "bg-red-100 text-red-700" },
+  ABANDONED: { label: "已放弃", className: "bg-gray-100 text-gray-500" },
 };
 
 const difficultyLabels: Record<number, string> = {
@@ -109,6 +110,9 @@ export default function ExamsPage() {
   const [banks, setBanks] = useState<QuestionBank[]>([]);
   const [banksLoading, setBanksLoading] = useState(false);
   const [selectedBanks, setSelectedBanks] = useState<string[]>([]);
+  const [bankSearch, setBankSearch] = useState("");
+  const [banksTotal, setBanksTotal] = useState(0);
+  const debouncedBankSearch = useDebouncedValue(bankSearch, 300);
   const [examTitle, setExamTitle] = useState("");
   const [examDesc, setExamDesc] = useState("");
   const [questionCount, setQuestionCount] = useState(20);
@@ -158,23 +162,30 @@ export default function ExamsPage() {
     if (!token) return;
     setBanksLoading(true);
     try {
-      const res = await fetch("/api/questions?limit=100", {
+      const params = new URLSearchParams({ limit: "100" });
+      if (debouncedBankSearch.trim()) params.set("search", debouncedBankSearch.trim());
+      const res = await fetch(`/api/questions?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
         setBanks(data.data || []);
+        setBanksTotal(data.pagination?.total ?? (data.data || []).length);
       }
     } catch {
       // ignore
     } finally {
       setBanksLoading(false);
     }
-  }, []);
+  }, [debouncedBankSearch]);
+
+  // 打开创建弹窗或搜索关键词变化（防抖后）时拉取题库列表
+  useEffect(() => {
+    if (showCreateDialog) fetchBanks();
+  }, [showCreateDialog, debouncedBankSearch, fetchBanks]);
 
   const handleOpenCreate = () => {
     setShowCreateDialog(true);
-    fetchBanks();
     setCreateTab("banks");
     setExamTitle("");
     setExamDesc("");
@@ -182,6 +193,8 @@ export default function ExamsPage() {
     setDurationMinutes(60);
     setDifficulty(3);
     setSelectedBanks([]);
+    setBankSearch("");
+    setBanksTotal(0);
     setAiTopic("");
     setAiQuestionCount(10);
     setAiDuration(60);
@@ -381,8 +394,15 @@ export default function ExamsPage() {
               return (
                 <Card
                   key={exam.id}
-                  className="cursor-pointer transition-shadow hover:shadow-md"
-                  onClick={() => router.push(`/exams/${exam.id}`)}
+                  className={cn(
+                    "transition-shadow hover:shadow-md",
+                    exam.status === "ABANDONED" ? "cursor-default" : "cursor-pointer"
+                  )}
+                  onClick={() => {
+                    // 已放弃的考试不允许进入
+                    if (exam.status === "ABANDONED") return;
+                    router.push(`/exams/${exam.id}`);
+                  }}
                 >
                   <CardHeader className="pb-2">
                     <div className="flex items-start justify-between">
@@ -527,36 +547,55 @@ export default function ExamsPage() {
               </div>
               <div className="space-y-2">
                 <Label>选择题库 *</Label>
+                <Input
+                  placeholder="搜索题库标题..."
+                  value={bankSearch}
+                  onChange={(e) => setBankSearch(e.target.value)}
+                />
                 <div className="border rounded-md max-h-40 overflow-y-auto p-2 space-y-1">
                   {banksLoading ? (
                     <p className="text-sm text-muted-foreground p-2">加载中...</p>
                   ) : banks.length === 0 ? (
-                    <p className="text-sm text-muted-foreground p-2">暂无可用题库</p>
+                    <p className="text-sm text-muted-foreground p-2">
+                      {debouncedBankSearch.trim() ? "未找到匹配的题库" : "暂无可用题库"}
+                    </p>
                   ) : (
-                    banks.map((bank) => (
-                      <label
-                        key={bank.id}
-                        className={cn(
-                          "flex items-center gap-2 p-2 rounded cursor-pointer text-sm transition-colors",
-                          selectedBanks.includes(bank.id)
-                            ? "bg-primary/10"
-                            : "hover:bg-accent"
-                        )}
-                      >
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 rounded border-gray-300"
-                          checked={selectedBanks.includes(bank.id)}
-                          onChange={() => toggleBank(bank.id)}
-                        />
-                        <span className="flex-1 truncate">{bank.title}</span>
-                        <span className="text-xs text-muted-foreground shrink-0">
-                          {bank.questionCount}题 | {difficultyLabels[bank.difficulty] || `难度${bank.difficulty}`}
-                        </span>
-                      </label>
-                    ))
+                    <>
+                      {banks.map((bank) => (
+                        <label
+                          key={bank.id}
+                          className={cn(
+                            "flex items-center gap-2 p-2 rounded cursor-pointer text-sm transition-colors",
+                            selectedBanks.includes(bank.id)
+                              ? "bg-primary/10"
+                              : "hover:bg-accent"
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-gray-300"
+                            checked={selectedBanks.includes(bank.id)}
+                            onChange={() => toggleBank(bank.id)}
+                          />
+                          <span className="flex-1 truncate">{bank.title}</span>
+                          <span className="text-xs text-muted-foreground shrink-0">
+                            {bank.questionCount}题 | {difficultyLabels[bank.difficulty] || `难度${bank.difficulty}`}
+                          </span>
+                        </label>
+                      ))}
+                      {banksTotal > banks.length && (
+                        <p className="text-xs text-muted-foreground p-2 text-center">
+                          题库较多，仅显示前 {banks.length} 个，请输入关键词搜索
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
+                {selectedBanks.length > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    已选择 {selectedBanks.length} 个题库
+                  </p>
+                )}
               </div>
               <div className="space-y-2">
                 <Label>题目数量: {questionCount}</Label>

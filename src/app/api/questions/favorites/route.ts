@@ -15,6 +15,19 @@ export async function GET(req: NextRequest) {
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "20", 10)));
 
+    // 练习页批量回显：?bankId=<id>&ids=1 时返回该用户在该题库的全部收藏题 id（不分页）
+    const bankIdParam = searchParams.get("bankId");
+    if (bankIdParam && searchParams.get("ids") === "1") {
+      const idRows = await prisma.favorite.findMany({
+        where: { userId: user.userId, question: { bankId: bankIdParam } },
+        select: { questionId: true },
+        take: 5000,
+      });
+      return Response.json({
+        favorites: idRows.map((row) => ({ questionId: row.questionId })),
+      });
+    }
+
     const [favorites, total] = await Promise.all([
       prisma.favorite.findMany({
         where: { userId: user.userId },

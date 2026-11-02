@@ -8,14 +8,14 @@ import {
   Eye,
   Trash2,
   Shield,
-  ChevronLeft,
-  ChevronRight,
   UserCog,
   UserPlus,
   KeyRound,
   Pencil,
   MailCheck,
   MailX,
+  Download,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -61,6 +61,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { formatDate } from "@/lib/utils";
 import toast from "react-hot-toast";
 import { handleApiError, getToken } from "@/lib/api-client";
+import { SharedPagination } from "@/components/shared/pagination";
 
 interface User {
   id: string;
@@ -159,6 +160,14 @@ export default function UsersPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createLoading, setCreateLoading] = useState(false);
+
+  const [exporting, setExporting] = useState(false);
+
+  // 危险操作二次确认（解封 / 强制激活 / 切换邮箱验证）
+  const [confirmAction, setConfirmAction] = useState<{
+    type: "unban" | "activate" | "toggleEmail";
+    user: User;
+  } | null>(null);
 
   const fetchUsers = useCallback(async (page: number, searchVal?: string, roleVal?: string, banVal?: string, emailVal?: string, activationVal?: string) => {
     setLoading(true);
@@ -394,6 +403,50 @@ export default function UsersPage() {
     }
   };
 
+  const handleConfirmAction = async () => {
+    if (!confirmAction) return;
+    const { type, user } = confirmAction;
+    setConfirmAction(null);
+    if (type === "unban") {
+      await handleUnban(user);
+    } else if (type === "activate") {
+      await handleForceActivate(user);
+    } else {
+      await handleToggleEmailVerified(user);
+    }
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (search) params.set("search", search);
+      if (roleFilter !== "all") params.set("role", roleFilter);
+      if (bannedFilter !== "all") params.set("banned", bannedFilter);
+      if (emailVerifiedFilter !== "all") params.set("emailVerified", emailVerifiedFilter);
+      if (activationFilter !== "all") params.set("isActivated", activationFilter);
+
+      const token = getToken();
+      const res = await fetch(`/api/admin/users/export?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        throw new Error("导出失败");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `users-${Date.now()}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("导出失败");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -401,10 +454,20 @@ export default function UsersPage() {
           <h1 className="text-2xl font-bold">用户管理</h1>
           <p className="text-sm text-muted-foreground">管理系统用户</p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <UserPlus className="mr-2 h-4 w-4" />
-          创建用户
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={handleExport} disabled={exporting}>
+            {exporting ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="mr-2 h-4 w-4" />
+            )}
+            导出 CSV
+          </Button>
+          <Button onClick={() => setCreateOpen(true)}>
+            <UserPlus className="mr-2 h-4 w-4" />
+            创建用户
+          </Button>
+        </div>
       </div>
 
       <Card>
@@ -554,7 +617,7 @@ export default function UsersPage() {
                               <Pencil className="h-4 w-4 text-blue-600" />
                             </Button>
                             {user.banned ? (
-                              <Button variant="ghost" size="icon" title="解封" onClick={() => handleUnban(user)}>
+                              <Button variant="ghost" size="icon" title="解封" onClick={() => setConfirmAction({ type: "unban", user })}>
                                 <CheckCircle className="h-4 w-4 text-green-600" />
                               </Button>
                             ) : (
@@ -562,14 +625,14 @@ export default function UsersPage() {
                                 <Ban className="h-4 w-4 text-red-600" />
                               </Button>
                             )}
-                            <Button variant="ghost" size="icon" title={user.emailVerified ? "取消验证" : "标记已验证"} onClick={() => handleToggleEmailVerified(user)}>
+                            <Button variant="ghost" size="icon" title={user.emailVerified ? "取消验证" : "标记已验证"} onClick={() => setConfirmAction({ type: "toggleEmail", user })}>
                               {user.emailVerified ? <MailX className="h-4 w-4 text-yellow-600" /> : <MailCheck className="h-4 w-4 text-green-600" />}
                             </Button>
                             <Button variant="ghost" size="icon" title="重置密码" onClick={() => { setResetPwdUser(user); setNewPassword(""); setResetPwdOpen(true); }}>
                               <KeyRound className="h-4 w-4 text-orange-600" />
                             </Button>
                             {!user.isActivated && (
-                              <Button variant="ghost" size="icon" title="强制激活" onClick={() => handleForceActivate(user)}>
+                              <Button variant="ghost" size="icon" title="强制激活" onClick={() => setConfirmAction({ type: "activate", user })}>
                                 <Shield className="h-4 w-4 text-blue-600" />
                               </Button>
                             )}
@@ -587,21 +650,13 @@ export default function UsersPage() {
                 </TableBody>
               </Table>
 
-              {pagination.totalPages > 1 && (
-                <div className="mt-4 flex items-center justify-between">
-                  <p className="text-sm text-muted-foreground">
-                    共 {pagination.total} 条，第 {pagination.page} / {pagination.totalPages} 页
-                  </p>
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" disabled={pagination.page <= 1} onClick={() => fetchUsers(pagination.page - 1)}>
-                      <ChevronLeft className="mr-1 h-4 w-4" />上一页
-                    </Button>
-                    <Button variant="outline" size="sm" disabled={pagination.page >= pagination.totalPages} onClick={() => fetchUsers(pagination.page + 1)}>
-                      下一页<ChevronRight className="ml-1 h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              )}
+              <SharedPagination
+                page={pagination.page}
+                totalPages={pagination.totalPages}
+                total={pagination.total}
+                pageSize={pagination.limit}
+                onPageChange={(p) => fetchUsers(p)}
+              />
             </>
           )}
         </CardContent>
@@ -782,6 +837,35 @@ export default function UsersPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">删除</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={confirmAction !== null}
+        onOpenChange={(open) => { if (!open) setConfirmAction(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirmAction?.type === "unban" && "确认解封"}
+              {confirmAction?.type === "activate" && "确认强制激活"}
+              {confirmAction?.type === "toggleEmail" && (confirmAction.user.emailVerified ? "确认取消邮箱验证" : "确认标记邮箱已验证")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmAction?.type === "unban" &&
+                `确定要解封用户 ${confirmAction.user.name}（${confirmAction.user.email}）吗？解封后该用户可正常登录使用。`}
+              {confirmAction?.type === "activate" &&
+                `确定要强制激活用户 ${confirmAction.user.name}（${confirmAction.user.email}）的账号吗？激活后无需使用激活码。`}
+              {confirmAction?.type === "toggleEmail" && confirmAction.user.emailVerified &&
+                `确定要取消用户 ${confirmAction.user.name}（${confirmAction.user.email}）的邮箱验证状态吗？`}
+              {confirmAction?.type === "toggleEmail" && !confirmAction.user.emailVerified &&
+                `确定将用户 ${confirmAction.user.name}（${confirmAction.user.email}）的邮箱标记为已验证吗？`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmAction}>确认</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

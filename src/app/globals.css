@@ -52,3 +52,43 @@
   * { @apply border-border; }
   body { @apply bg-background text-foreground; }
 }
+
+/* AI 输出内容样式：语义化 HTML + 类名控制外观，深浅色模式自适应 */
+@layer components {
+  .ai-content {
+    @apply text-sm leading-relaxed;
+  }
+  .ai-content .ai-block {
+    @apply space-y-2 rounded-lg border bg-card p-3;
+  }
+  .ai-content .ai-box {
+    @apply rounded-md border border-dashed bg-muted/40 p-3 my-2;
+  }
+  .ai-content h3 {
+    @apply mb-1 text-sm font-semibold text-foreground;
+  }
+  .ai-content p {
+    @apply my-1;
+  }
+  .ai-content ul {
+    @apply my-1 list-disc space-y-1 pl-5;
+  }
+  .ai-content li {
+    @apply leading-relaxed;
+  }
+  .ai-content strong {
+    @apply font-semibold;
+  }
+  .ai-content .ai-good {
+    @apply font-semibold text-green-600 dark:text-green-400;
+  }
+  .ai-content .ai-bad {
+    @apply font-semibold text-red-600 dark:text-red-400;
+  }
+  .ai-content .ai-highlight {
+    @apply rounded bg-primary/10 px-1 font-medium text-primary;
+  }
+  .ai-content code {
+    @apply rounded bg-muted px-1 py-0.5 text-[0.85em];
+  }
+}

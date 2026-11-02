@@ -5,9 +5,27 @@ import { Toaster } from "react-hot-toast";
 import { LoadingScreen } from "@/components/ui/loading-screen";
 import "./globals.css";
 
+const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+
 export const metadata: Metadata = {
-  title: "NovaMind - 在线刷题平台",
-  description: "智能刷题，高效学习",
+  metadataBase: new URL(baseUrl),
+  title: {
+    default: "NovaMind - AI 驱动的在线刷题平台",
+    template: "%s | NovaMind",
+  },
+  description: "智能刷题，高效学习：题库练习、模拟考试、错题复习、学习分析",
+  applicationName: "NovaMind",
+  openGraph: {
+    type: "website",
+    siteName: "NovaMind",
+    title: "NovaMind - AI 驱动的在线刷题平台",
+    description: "智能刷题，高效学习：题库练习、模拟考试、错题复习、学习分析",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "NovaMind - AI 驱动的在线刷题平台",
+    description: "智能刷题，高效学习：题库练习、模拟考试、错题复习、学习分析",
+  },
 };
 
 export default function RootLayout({
@@ -16,7 +34,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" suppressHydrationWarning>
       <body className="min-h-screen bg-background antialiased">
         <Providers>
           <Suspense fallback={<LoadingScreen message="正在加载..." />}>

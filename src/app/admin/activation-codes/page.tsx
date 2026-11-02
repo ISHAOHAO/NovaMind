@@ -7,8 +7,6 @@ import {
   Copy,
   Download,
   Check,
-  ChevronLeft,
-  ChevronRight,
   RefreshCw,
   Trash2,
   Loader2,
@@ -55,6 +53,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { formatDate } from "@/lib/utils";
+import { useDebouncedValue } from "@/lib/use-debounce";
+import { SharedPagination } from "@/components/shared/pagination";
 
 interface ActivationCode {
   id: string;
@@ -104,6 +104,7 @@ export default function ActivationCodesPage() {
   });
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [statusFilter, setStatusFilter] = useState("all");
   const [batchFilter, setBatchFilter] = useState("");
 
@@ -117,6 +118,7 @@ export default function ActivationCodesPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [singleDeleteCode, setSingleDeleteCode] = useState<ActivationCode | null>(null);
   const [exporting, setExporting] = useState(false);
 
   const fetchCodes = useCallback(async (page: number) => {
@@ -125,7 +127,7 @@ export default function ActivationCodesPage() {
       const params = new URLSearchParams();
       params.set("page", String(page));
       params.set("limit", "20");
-      if (search) params.set("search", search);
+      if (debouncedSearch) params.set("search", debouncedSearch);
       if (statusFilter !== "all") params.set("status", statusFilter);
       if (batchFilter) params.set("batchId", batchFilter);
 
@@ -141,7 +143,7 @@ export default function ActivationCodesPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, statusFilter, batchFilter]);
+  }, [debouncedSearch, statusFilter, batchFilter]);
 
   useEffect(() => {
     fetchCodes(1);
@@ -181,10 +183,18 @@ export default function ActivationCodesPage() {
   const handleExport = async () => {
     setExporting(true);
     try {
+      const params = new URLSearchParams();
+      if (search) params.set("search", search);
+      if (statusFilter !== "all") params.set("status", statusFilter);
+      if (batchFilter) params.set("batchId", batchFilter);
+
       const token = localStorage.getItem("novamind_token");
-      const res = await fetch("/api/admin/activation-codes/export", {
+      const res = await fetch(`/api/admin/activation-codes/export?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (!res.ok) {
+        throw new Error("导出失败");
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -252,7 +262,7 @@ export default function ActivationCodesPage() {
     }
   };
 
-  const handleSingleDelete = async (codeId: string) => {
+  const handleSingleDelete = async (code: ActivationCode) => {
     try {
       const token = localStorage.getItem("novamind_token");
       const res = await fetch("/api/admin/activation-codes", {
@@ -261,7 +271,7 @@ export default function ActivationCodesPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ ids: [codeId] }),
+        body: JSON.stringify({ ids: [code.id] }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -463,7 +473,7 @@ export default function ActivationCodesPage() {
                                 variant="ghost"
                                 size="icon"
                                 className="h-8 w-8 text-red-600"
-                                onClick={() => handleSingleDelete(code.id)}
+                                onClick={() => setSingleDeleteCode(code)}
                               >
                                 <Trash2 className="h-4 w-4" />
                               </Button>
@@ -476,33 +486,13 @@ export default function ActivationCodesPage() {
                 </Table>
               </div>
 
-              {pagination.totalPages > 1 && (
-                <div className="mt-4 flex items-center justify-between">
-                  <p className="text-sm text-muted-foreground">
-                    共 {pagination.total} 条，第 {pagination.page} / {pagination.totalPages} 页
-                  </p>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={pagination.page <= 1}
-                      onClick={() => fetchCodes(pagination.page - 1)}
-                    >
-                      <ChevronLeft className="mr-1 h-4 w-4" />
-                      上一页
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={pagination.page >= pagination.totalPages}
-                      onClick={() => fetchCodes(pagination.page + 1)}
-                    >
-                      下一页
-                      <ChevronRight className="ml-1 h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              )}
+              <SharedPagination
+                page={pagination.page}
+                totalPages={pagination.totalPages}
+                total={pagination.total}
+                pageSize={pagination.limit}
+                onPageChange={(p) => fetchCodes(p)}
+              />
             </>
           )}
         </CardContent>
@@ -524,6 +514,32 @@ export default function ActivationCodesPage() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {deleting ? "删除中..." : "确认删除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={singleDeleteCode !== null}
+        onOpenChange={(open) => { if (!open) setSingleDeleteCode(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认删除激活码</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定要删除激活码 <code className="font-mono">{singleDeleteCode?.code}</code> 吗？此操作不可撤销。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (singleDeleteCode) handleSingleDelete(singleDeleteCode);
+                setSingleDeleteCode(null);
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              确认删除
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -7,10 +7,11 @@ export const GET = requireAdmin(async (req: NextRequest) => {
   try {
     const { searchParams } = new URL(req.url);
     const status = searchParams.get("status") || "all";
+    const search = searchParams.get("search") || "";
     const page = parseInt(searchParams.get("page") || "1", 10);
     const limit = parseInt(searchParams.get("limit") || "20", 10);
 
-    const cacheKey = `admin:reports:list:${status}:${page}:${limit}`;
+    const cacheKey = `admin:reports:list:${status}:${search}:${page}:${limit}`;
     const cached = await getFromCache<any>(cacheKey);
     if (cached) {
       return Response.json(cached);
@@ -19,6 +20,12 @@ export const GET = requireAdmin(async (req: NextRequest) => {
     const where: any = {};
     if (status !== "all") {
       where.status = status;
+    }
+    if (search) {
+      where.OR = [
+        { reporter: { email: { contains: search, mode: "insensitive" } } },
+        { questionBank: { title: { contains: search, mode: "insensitive" } } },
+      ];
     }
 
     const [reports, total] = await Promise.all([

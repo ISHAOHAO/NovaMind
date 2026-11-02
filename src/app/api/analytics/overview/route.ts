@@ -18,6 +18,7 @@ export async function GET(req: NextRequest) {
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const days60Ago = new Date(today.getTime() - 60 * 24 * 60 * 60 * 1000);
 
     const [
       totalQuestions,
@@ -26,6 +27,7 @@ export async function GET(req: NextRequest) {
       distinctBankResult,
       activeDaysResult,
       avgDurationResult,
+      streakDates,
     ] = await Promise.all([
       prisma.userQuestionRecord.count({ where: { userId: user.userId } }),
       prisma.userQuestionRecord.count({
@@ -46,6 +48,11 @@ export async function GET(req: NextRequest) {
         where: { userId: user.userId },
         _avg: { duration: true },
       }),
+      prisma.$queryRaw<{ date: Date }[]>`
+        SELECT DISTINCT DATE("createdAt") as date
+        FROM "UserQuestionRecord"
+        WHERE "userId" = ${user.userId} AND "createdAt" >= ${days60Ago}
+      `,
     ]);
 
     const correctRate =
@@ -56,6 +63,25 @@ export async function GET(req: NextRequest) {
     const totalBanks = parseInt(distinctBankResult[0]?.count || "0");
     const activeDays = parseInt(activeDaysResult[0]?.count || "0");
 
+    // 连续学习天数：从今天(或昨天)往前数连续有答题记录的天数
+    const dateSet = new Set(
+      streakDates.map(
+        (r: { date: Date | string }) =>
+          r.date instanceof Date
+            ? r.date.toISOString().split("T")[0]
+            : String(r.date).split("T")[0]
+      )
+    );
+    let streakDays = 0;
+    const cursor = new Date();
+    if (!dateSet.has(cursor.toISOString().split("T")[0])) {
+      cursor.setDate(cursor.getDate() - 1);
+    }
+    while (dateSet.has(cursor.toISOString().split("T")[0])) {
+      streakDays += 1;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+
     const data = {
       totalQuestions,
       correctCount,
@@ -64,6 +90,7 @@ export async function GET(req: NextRequest) {
       todayQuestions,
       totalBanks,
       activeDays,
+      streakDays,
       avgDuration: Math.round(avgDurationResult._avg.duration || 0),
     };
 
