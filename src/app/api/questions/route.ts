@@ -8,6 +8,12 @@ import { invalidatePattern, getFromCache, setToCache } from "@/lib/redis";
 
 export async function GET(req: NextRequest) {
   try {
+    // 与全站登录墙保持一致：题库目录（含上传者信息与统计）不对匿名开放
+    const user = await authenticateRequest(req);
+    if (!user) {
+      return Response.json({ error: "请先登录" }, { status: 401 });
+    }
+
     const { searchParams } = new URL(req.url);
     const search = searchParams.get("search") || "";
     const category = searchParams.get("category") || "";
